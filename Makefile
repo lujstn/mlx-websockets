@@ -32,6 +32,26 @@ test-cov:
 	@echo "Running tests with coverage..."
 	pytest -v --cov=. --cov-report=term-missing --cov-report=html
 
+.PHONY: test-inference
+test-inference:
+	@echo "Running inference tests..."
+	pytest -v tests/test_inference.py
+
+.PHONY: test-integration
+test-integration:
+	@echo "Running integration tests..."
+	pytest -v tests/test_integration.py -m integration
+
+.PHONY: test-benchmarks
+test-benchmarks:
+	@echo "Running performance benchmarks..."
+	pytest -v -s tests/test_benchmarks.py -m benchmark
+
+.PHONY: test-fast
+test-fast:
+	@echo "Running fast tests only..."
+	pytest -v -m "not slow and not benchmark"
+
 .PHONY: clean
 clean:
 	@echo "Cleaning Python cache files..."

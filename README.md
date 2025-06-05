@@ -5,16 +5,15 @@ A high-performance WebSocket server for streaming multimodal data (text, images,
 ## Features
 
 - 🚀 **Real-time streaming** - WebSocket-based communication for low-latency inference
-- 🎯 **Multimodal support** - Handle text, images, and video frames seamlessly
+- 🎯 **Designed for running local multimodal models** - Handle text, images, and video frames seamlessly (we default to Gemma 3 4-bit for this reason)
 - 🔧 **MLX optimized** - Leverages Apple's MLX framework for efficient on-device inference
 - 🎛️ **Flexible model support** - Use any compatible model from Hugging Face
-- ⚡ **Gemma 3 4-bit** - Default model with ~4.5-6GB memory usage (2.6GB weights + runtime)
 - 🎬 **Stream processing** - Queue-based architecture with frame dropping for real-time performance
 - 💬 **Token streaming** - Real-time token-by-token response streaming
 
 ## Requirements
 
-- Apple Silicon Mac (M1/M2/M3/M4)
+- Mac with Apple Silicon
 - macOS 13.0 (Ventura) or later
 - Python 3.9+
 - ~6GB available memory (for default Gemma 3 4-bit model)
@@ -22,24 +21,21 @@ A high-performance WebSocket server for streaming multimodal data (text, images,
 
 ## Installation
 
-1. **Clone the repository:**
+1. **Clone the repository**:
+
 ```bash
 git clone https://github.com/lujstn/mlx-websockets.git
 cd mlx-websockets
 ```
 
-2. **Create a virtual environment (recommended):**
-```bash
-python -m venv venv
-source venv/bin/activate  # On macOS/Linux
-```
+2. **Install dependencies**:
 
-3. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **Verify MLX installation:**
+3. **Verify MLX installation** _(optional)_:
+
 ```bash
 python -c "import mlx; print(mlx.__version__)"
 ```
@@ -76,16 +72,6 @@ make lint
 make all
 ```
 
-### Development Dependencies
-
-- **pytest** - Testing framework
-- **pytest-asyncio** - Async test support
-- **pytest-cov** - Coverage reporting
-- **black** - Code formatter
-- **ruff** - Fast Python linter
-
-All development dependencies are included in `requirements.txt`.
-
 ## Quick Start
 
 ```bash
@@ -93,96 +79,6 @@ python mlx_streaming_server.py
 ```
 
 The server will start on `ws://localhost:8765` by default.
-
-## Usage
-
-### Basic Examples
-
-#### Text Chat
-```python
-import asyncio
-import websockets
-import json
-
-async def chat():
-    uri = "ws://localhost:8765"
-    async with websockets.connect(uri) as websocket:
-        # Send text message
-        await websocket.send(json.dumps({
-            "type": "text_input",
-            "content": "What is machine learning?",
-            "context": "I'm a beginner"  # optional
-        }))
-        
-        # Receive streaming response
-        while True:
-            response = await websocket.recv()
-            data = json.loads(response)
-            
-            if data["type"] == "token":
-                print(data["content"], end="", flush=True)
-            elif data["type"] == "response_complete":
-                print("\n\nFull response:", data["full_text"])
-                break
-
-asyncio.run(chat())
-```
-
-#### Image Analysis
-```python
-import base64
-
-async def analyze_image():
-    uri = "ws://localhost:8765"
-    async with websockets.connect(uri) as websocket:
-        # Read and encode image
-        with open("screenshot.png", "rb") as f:
-            image_data = base64.b64encode(f.read()).decode()
-        
-        # Send image for analysis
-        await websocket.send(json.dumps({
-            "type": "image_input",
-            "image": f"data:image/png;base64,{image_data}",
-            "prompt": "What's in this image? Be detailed.",
-            "source": "screenshot"  # optional tracking
-        }))
-        
-        # Handle response (same as text)
-        while True:
-            response = await websocket.recv()
-            data = json.loads(response)
-            if data["type"] == "response_complete":
-                print(data["full_text"])
-                break
-```
-
-#### Video/Screen Streaming
-```python
-async def stream_frames():
-    uri = "ws://localhost:8765"
-    async with websockets.connect(uri) as websocket:
-        # Continuously send frames
-        for frame in get_video_frames():  # Your frame source
-            frame_base64 = base64.b64encode(frame).decode()
-            
-            await websocket.send(json.dumps({
-                "type": "video_frame",  # or "screen_frame"
-                "frame": f"data:image/jpeg;base64,{frame_base64}",
-                "prompt": "Describe any changes you see"
-            }))
-            
-            # Non-blocking receive to handle responses
-            try:
-                response = await asyncio.wait_for(websocket.recv(), timeout=0.1)
-                data = json.loads(response)
-                
-                if data["type"] == "frame_dropped":
-                    print("Frame dropped:", data["reason"])
-                elif data["type"] == "response_complete":
-                    print("Analysis:", data["full_text"])
-            except asyncio.TimeoutError:
-                continue  # No response yet, keep streaming
-```
 
 ### Supported Input Types
 
@@ -213,26 +109,27 @@ python mlx_streaming_server.py --model "mlx-community/your-model-id" --port 8080
 
 You can update generation parameters at runtime via WebSocket. All fields are optional:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `candidateCount` | integer | 1 | Number of responses to generate (MLX typically supports only 1) |
-| `maxOutputTokens` | integer | 200 | Maximum tokens in response |
-| `temperature` | number | 0.7 | Controls randomness (0.0-2.0). Lower = more deterministic |
-| `topP` | number | 1.0 | Cumulative probability threshold for token sampling (0.0-1.0) |
-| `topK` | integer | 50 | Maximum number of tokens to consider when sampling |
-| `presencePenalty` | number | 0.0 | Penalty for using tokens that appear in the response |
-| `frequencyPenalty` | number | 0.0 | Penalty scaled by token usage frequency |
-| `responseModalities` | array | ["TEXT"] | Output types (currently only TEXT is supported) |
-| `max_tokens_image` | integer | 100 | Special: max tokens for image inputs |
+| Parameter            | Type    | Default  | Description                                                     |
+| -------------------- | ------- | -------- | --------------------------------------------------------------- |
+| `candidateCount`     | integer | 1        | Number of responses to generate (MLX typically supports only 1) |
+| `maxOutputTokens`    | integer | 200      | Maximum tokens in response                                      |
+| `temperature`        | number  | 0.7      | Controls randomness (0.0-2.0). Lower = more deterministic       |
+| `topP`               | number  | 1.0      | Cumulative probability threshold for token sampling (0.0-1.0)   |
+| `topK`               | integer | 50       | Maximum number of tokens to consider when sampling              |
+| `presencePenalty`    | number  | 0.0      | Penalty for using tokens that appear in the response            |
+| `frequencyPenalty`   | number  | 0.0      | Penalty scaled by token usage frequency                         |
+| `responseModalities` | array   | ["TEXT"] | Output types (currently only TEXT is supported)                 |
+| `max_tokens_image`   | integer | 100      | Special: max tokens for image inputs                            |
 
 **Note**: `presencePenalty` and `frequencyPenalty` are converted to MLX's `repetition_penalty` parameter for similar effect.
 
 Example configuration update:
+
 ```json
 {
-    "type": "config",
-    "temperature": 0.9,
-    "maxOutputTokens": 300
+  "type": "config",
+  "temperature": 0.9,
+  "maxOutputTokens": 300
 }
 ```
 
@@ -241,125 +138,136 @@ Example configuration update:
 ### Input Messages
 
 #### Text Input
+
 ```json
 {
-    "type": "text_input",
-    "content": "Your question or prompt",
-    "context": "Optional context"  // optional
+  "type": "text_input",
+  "content": "Your question or prompt",
+  "context": "Optional context" // optional
 }
 ```
 
 #### Image Input
+
 ```json
 {
-    "type": "image_input",
-    "image": "data:image/png;base64,<base64_data>",  // or just base64 string
-    "prompt": "What do you see?",
-    "source": "screenshot"  // optional, for tracking
+  "type": "image_input",
+  "image": "data:image/png;base64,<base64_data>", // or just base64 string
+  "prompt": "What do you see?",
+  "source": "screenshot" // optional, for tracking
 }
 ```
 
 #### Video/Screen Frame
+
 ```json
 {
-    "type": "video_frame",  // or "screen_frame"
-    "frame": "data:image/jpeg;base64,<base64_data>",
-    "prompt": "Describe the scene",
-    "source": "webcam"  // optional
+  "type": "video_frame", // or "screen_frame"
+  "frame": "data:image/jpeg;base64,<base64_data>",
+  "prompt": "Describe the scene",
+  "source": "webcam" // optional
 }
 ```
 
 #### Configuration Update
+
 ```json
 {
-    "type": "config",
-    // All fields are optional - provide only what you want to change
-    "candidateCount": 1,
-    "maxOutputTokens": 200,
-    "temperature": 0.7,
-    "topP": 0.9,
-    "topK": 50,
-    "presencePenalty": 0.0,
-    "frequencyPenalty": 0.0,
-    "responseModalities": ["TEXT"],
-    "max_tokens_image": 100
+  "type": "config",
+  // All fields are optional - provide only what you want to change
+  "candidateCount": 1,
+  "maxOutputTokens": 200,
+  "temperature": 0.7,
+  "topP": 0.9,
+  "topK": 50,
+  "presencePenalty": 0.0,
+  "frequencyPenalty": 0.0,
+  "responseModalities": ["TEXT"],
+  "max_tokens_image": 100
 }
 ```
 
 ### Response Messages
 
 #### Response Start
+
 ```json
 {
-    "type": "response_start",
-    "timestamp": 1234567890.123,
-    "input_type": "text|image"
+  "type": "response_start",
+  "timestamp": 1234567890.123,
+  "input_type": "text|image"
 }
 ```
 
 #### Token Stream
+
 ```json
 {
-    "type": "token",
-    "content": "generated token",
-    "timestamp": 1234567890.123
+  "type": "token",
+  "content": "generated token",
+  "timestamp": 1234567890.123
 }
 ```
 
 #### Response Complete
+
 ```json
 {
-    "type": "response_complete",
-    "full_text": "Complete generated response",
-    "timestamp": 1234567890.123,
-    "input_type": "text|image",
-    "inference_time": 0.456  // Time taken for inference in seconds
+  "type": "response_complete",
+  "full_text": "Complete generated response",
+  "timestamp": 1234567890.123,
+  "input_type": "text|image",
+  "inference_time": 0.456 // Time taken for inference in seconds
 }
 ```
 
 #### Frame Dropped (streaming only)
+
 ```json
 {
-    "type": "frame_dropped",
-    "reason": "processing_queue_full"
+  "type": "frame_dropped",
+  "reason": "processing_queue_full"
 }
 ```
 
 #### Error
+
 ```json
 {
-    "type": "error",
-    "error": "Error message",
-    "timestamp": 1234567890.123
+  "type": "error",
+  "error": "Error message",
+  "timestamp": 1234567890.123
 }
 ```
 
 #### Configuration Updated
+
 ```json
 {
-    "type": "config_updated",
-    "updated_fields": {
-        // Only the fields that were changed
-        "temperature": 0.9,
-        "maxOutputTokens": 300
-    },
-    "current_config": {
-        // Full current configuration
-        "candidateCount": 1,
-        "maxOutputTokens": 300,
-        "temperature": 0.9,
-        "topP": 1.0,
-        "topK": 50,
-        "presencePenalty": 0.0,
-        "frequencyPenalty": 0.0,
-        "responseModalities": ["TEXT"]
-    }
+  "type": "config_updated",
+  "updated_fields": {
+    // Only the fields that were changed
+    "temperature": 0.9,
+    "maxOutputTokens": 300
+  },
+  "current_config": {
+    // Full current configuration
+    "candidateCount": 1,
+    "maxOutputTokens": 300,
+    "temperature": 0.9,
+    "topP": 1.0,
+    "topK": 50,
+    "presencePenalty": 0.0,
+    "frequencyPenalty": 0.0,
+    "responseModalities": ["TEXT"]
+  }
 }
 ```
 
 ## Performance
 
-Optimized for Apple Silicon:
+Optimized for Apple Silicon with Gemma 3's 4-bit model:
+
 - **Memory**: ~4.5-6GB total (2.6GB model weights + 2-4GB runtime)
 - **Processing**: Queue-based with max 10 frames buffered
 - **Image sizing**: Auto-resizes to 768px max dimension
@@ -371,11 +279,13 @@ Optimized for Apple Silicon:
 ### Common Issues
 
 1. **Model loading fails:**
+
    - Ensure you have enough free memory (~6GB)
    - Check internet connection for model download
    - Try clearing MLX cache: `rm -rf ~/.cache/huggingface/hub/`
 
 2. **Import errors:**
+
    - Verify you're using Python 3.9+
    - Ensure virtual environment is activated
    - Reinstall MLX: `pip install --upgrade mlx mlx-lm mlx-vlm`
@@ -401,7 +311,6 @@ This server works with MLX-compatible models from Hugging Face:
 - **Recommended Models**:
   - `mlx-community/gemma-3-4b-it-4bit` (default)
   - `mlx-community/llama-3.2-11b-vision-instruct-4bit`
-  - Any MLX-quantized multimodal model
 
 ## Security Considerations
 
@@ -422,17 +331,16 @@ The server uses a multi-threaded, queue-based architecture:
    - `Lock` for model inference (ensures single inference at a time)
    - Thread-safe message passing between async and sync contexts
 
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
+## Credits
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+🏃 Built by Lucas Johnston Kurilov ([lujstn.com](https://lujstn.com), [@lujstn](https://tiktok.com/@lujstn))
 
-## Acknowledgments
+_This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details._
 
 - Built on [Apple MLX](https://github.com/ml-explore/mlx) - Fast machine learning framework for Apple Silicon
-- Default model: [Gemma 3 4-bit](https://huggingface.co/mlx-community/gemma-3-4b-it-4bit) by Google
+- Default model: [Gemma 3 4-bit](https://huggingface.co/mlx-community/gemma-3-4b-it-4bit) by Google, quantized by the MLX Community
 - WebSocket implementation using [websockets](https://github.com/python-websockets/websockets) library

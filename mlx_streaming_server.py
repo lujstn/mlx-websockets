@@ -9,6 +9,9 @@ import asyncio
 import base64
 import io
 import json
+import logging
+import os
+import signal
 import threading
 import time
 from queue import Empty, Queue
@@ -16,6 +19,7 @@ from threading import Lock, RLock
 
 import mlx.core as mx
 import websockets
+import websockets.exceptions
 from mlx_vlm import generate, load
 from PIL import Image
 
@@ -23,6 +27,13 @@ try:
     from mlx_lm import generate as text_generate
 except ImportError:
     text_generate = None  # Will handle gracefully if not available
+
+# Configure logging
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class MLXStreamingServer:
@@ -66,23 +77,31 @@ class MLXStreamingServer:
         # Protected by config_lock since it's configuration
         self.max_tokens_image = 100  # Images typically need fewer tokens
 
-        print(f"Loading model: {model_name}")
+        # Shutdown handling
+        self.shutdown_event = asyncio.Event()
+        self.active_connections = set()  # Track active WebSocket connections
+        self.server = None  # Will hold the WebSocket server
+
+        logger.info(f"Loading model: {model_name}")
         self._load_model()
 
     def _load_model(self):
         """Load the MLX model and processor"""
         try:
             self.model, self.processor = load(self.model_name)
-            print("Model loaded successfully!")
-            print(f"Memory usage: {mx.metal.get_active_memory() / 1024**3:.2f} GB")
+            logger.info("Model loaded successfully!")
+            logger.info(f"Memory usage: {mx.get_active_memory() / 1024**3:.2f} GB")
         except Exception as e:
-            print(f"Error loading model: {e}")
+            logger.error(f"Error loading model: {e}")
             raise
 
     async def handle_client(self, websocket, path):
         """Handle WebSocket client connections"""
         client_id = websocket.remote_address
-        print(f"Client connected: {client_id}")
+        logger.info(f"Client connected: {client_id}")
+
+        # Track this connection for shutdown
+        self.active_connections.add(websocket)
 
         # Create client state
         client_queue = Queue(maxsize=10)
@@ -104,7 +123,7 @@ class MLXStreamingServer:
         processing_thread = threading.Thread(
             target=self._process_frames,
             args=(websocket, client_queue, stop_event, loop, client_id),
-            daemon=True,
+            daemon=False,  # Non-daemon so we can wait for it to finish
         )
         processing_thread.start()
 
@@ -186,10 +205,13 @@ class MLXStreamingServer:
                     await self._handle_config(data, websocket)
 
         except websockets.exceptions.ConnectionClosed:
-            print(f"Client disconnected: {client_id}")
+            logger.info(f"Client disconnected: {client_id}")
         except Exception as e:
-            print(f"Error handling client {client_id}: {e}")
+            logger.error(f"Error handling client {client_id}: {e}", exc_info=True)
         finally:
+            # Remove from active connections
+            self.active_connections.discard(websocket)
+
             # Signal thread to stop and clean up generators
             with self.clients_lock:
                 if client_id in self.client_stop_events:
@@ -200,8 +222,11 @@ class MLXStreamingServer:
                     # Clear the list to signal no more processing needed
                     self.client_generators[client_id].clear()
 
-            # Wait a bit for thread to finish processing
-            await asyncio.sleep(0.5)
+            # Wait for the processing thread to finish (up to 2 seconds)
+            if "processing_thread" in locals():
+                processing_thread.join(timeout=2.0)
+                if processing_thread.is_alive():
+                    logger.warning(f"Processing thread for {client_id} didn't stop cleanly")
 
             # Clean up client state with lock
             with self.clients_lock:
@@ -229,9 +254,9 @@ class MLXStreamingServer:
                 # Timeout is expected - check if we should stop
                 continue
             except Exception as e:
-                print(f"Error processing input for client {client_id}: {e}")
+                logger.error(f"Error processing input for client {client_id}: {e}")
 
-        print(f"Processing thread stopped for client {client_id}")
+        logger.debug(f"Processing thread stopped for client {client_id}")
 
     def _safe_send(self, websocket, message, loop):
         """Safely send message to websocket, handling connection errors"""
@@ -247,8 +272,70 @@ class MLXStreamingServer:
             Exception,
         ) as e:
             if not isinstance(e, (websockets.exceptions.ConnectionClosedOK, asyncio.TimeoutError)):
-                print(f"Error sending message: {e}")
+                # Only log if it's not a "no close frame" error (common in tests)
+                error_msg = str(e)
+                if "no close frame received or sent" not in error_msg:
+                    logger.warning(f"Error sending message: {e}")
             return False
+
+    def _stream_response(self, generator, websocket, loop, client_id, stop_event, data, input_type):
+        """Common method for streaming token responses"""
+        full_response = ""
+        max_timeout = 60  # 60 seconds max for inference
+        inference_start = time.time()
+
+        try:
+            for token in generator:
+                # Check if we should stop
+                if stop_event.is_set():
+                    break
+
+                # Check timeout
+                if time.time() - inference_start > max_timeout:
+                    raise TimeoutError(f"Inference exceeded {max_timeout}s timeout")
+
+                full_response += token
+                if not self._safe_send(
+                    websocket,
+                    json.dumps({"type": "token", "content": token, "timestamp": data["timestamp"]}),
+                    loop,
+                ):
+                    break  # Connection closed, stop streaming
+
+            # Send completion with inference time
+            inference_time = time.time() - inference_start
+            self._safe_send(
+                websocket,
+                json.dumps(
+                    {
+                        "type": "response_complete",
+                        "full_text": full_response,
+                        "timestamp": data["timestamp"],
+                        "input_type": input_type,
+                        "inference_time": inference_time,
+                    }
+                ),
+                loop,
+            )
+
+            # Track performance per client
+            with self.clients_lock:
+                if client_id in self.client_frame_counts:
+                    self.client_frame_counts[client_id] += 1
+                    frame_count = self.client_frame_counts[client_id]
+                    if frame_count % 10 == 0:
+                        logger.debug(
+                            f"Client {client_id}: Processed {frame_count} inputs, last inference: {inference_time:.2f}s"
+                        )
+
+        finally:
+            # Always remove generator from tracking
+            with self.clients_lock:
+                if (
+                    client_id in self.client_generators
+                    and generator in self.client_generators[client_id]
+                ):
+                    self.client_generators[client_id].remove(generator)
 
     def _process_image(self, data, websocket, loop, client_id, stop_event):
         """Process image/video frame input"""
@@ -281,9 +368,6 @@ class MLXStreamingServer:
             ):
                 return  # Connection closed, stop processing
 
-            # Track inference time
-            inference_start = time.time()
-
             # Generate response with streaming
             # Use image-specific max tokens or fall back to config
             with self.config_lock:
@@ -301,7 +385,7 @@ class MLXStreamingServer:
                 with self.config_lock:
                     top_k = self.config["topK"]
                     repetition_penalty = 1.0  # Default no penalty
-                    
+
                     # Convert presence/frequency penalties to repetition penalty
                     # MLX uses a single repetition_penalty parameter
                     if self.config["presencePenalty"] != 0 or self.config["frequencyPenalty"] != 0:
@@ -309,11 +393,11 @@ class MLXStreamingServer:
                         # Typical range for repetition_penalty is 1.0-1.5
                         penalty_strength = max(
                             abs(self.config["presencePenalty"]),
-                            abs(self.config["frequencyPenalty"])
+                            abs(self.config["frequencyPenalty"]),
                         )
                         # Map penalty range [0, 2] to repetition_penalty range [1.0, 1.5]
                         repetition_penalty = 1.0 + (penalty_strength * 0.25)
-                
+
                 response_generator = generate(
                     self.model,
                     self.processor,
@@ -333,59 +417,10 @@ class MLXStreamingServer:
                     if client_id in self.client_generators:
                         self.client_generators[client_id].append(response_generator)
 
-            full_response = ""
-            max_timeout = 60  # 60 seconds max for inference
-
-            for token in response_generator:
-                # Check if we should stop
-                if stop_event.is_set():
-                    break
-
-                # Check timeout
-                if time.time() - inference_start > max_timeout:
-                    raise TimeoutError(f"Inference exceeded {max_timeout}s timeout")
-
-                full_response += token
-                if not self._safe_send(
-                    websocket,
-                    json.dumps({"type": "token", "content": token, "timestamp": data["timestamp"]}),
-                    loop,
-                ):
-                    break  # Connection closed, stop streaming
-
-            # Remove generator from tracking
-            with self.clients_lock:
-                if (
-                    client_id in self.client_generators
-                    and response_generator in self.client_generators[client_id]
-                ):
-                    self.client_generators[client_id].remove(response_generator)
-
-            # Send completion with inference time
-            inference_time = time.time() - inference_start
-            self._safe_send(
-                websocket,
-                json.dumps(
-                    {
-                        "type": "response_complete",
-                        "full_text": full_response,
-                        "timestamp": data["timestamp"],
-                        "input_type": "image",
-                        "inference_time": inference_time,
-                    }
-                ),
-                loop,
+            # Use common streaming method
+            self._stream_response(
+                response_generator, websocket, loop, client_id, stop_event, data, "image"
             )
-
-            # Track performance per client
-            with self.clients_lock:
-                if client_id in self.client_frame_counts:
-                    self.client_frame_counts[client_id] += 1
-                    frame_count = self.client_frame_counts[client_id]
-                    if frame_count % 10 == 0:
-                        print(
-                            f"Client {client_id}: Processed {frame_count} inputs, last inference: {inference_time:.2f}s"
-                        )
 
         except Exception as e:
             self._safe_send(
@@ -407,9 +442,6 @@ class MLXStreamingServer:
             ):
                 return  # Connection closed, stop processing
 
-            # Track inference time
-            inference_start = time.time()
-
             # Build prompt with context if provided
             prompt = data["prompt"]
             if data.get("context"):
@@ -421,14 +453,13 @@ class MLXStreamingServer:
                 temperature = self.config["temperature"]
                 top_p = self.config["topP"]
                 top_k = self.config["topK"]
-                
+
                 # Convert presence/frequency penalties to repetition penalty
                 repetition_penalty = 1.0  # Default no penalty
                 if self.config["presencePenalty"] != 0 or self.config["frequencyPenalty"] != 0:
                     # Combine penalties - use the stronger one
                     penalty_strength = max(
-                        abs(self.config["presencePenalty"]),
-                        abs(self.config["frequencyPenalty"])
+                        abs(self.config["presencePenalty"]), abs(self.config["frequencyPenalty"])
                     )
                     # Map penalty range [0, 2] to repetition_penalty range [1.0, 1.5]
                     repetition_penalty = 1.0 + (penalty_strength * 0.25)
@@ -467,66 +498,19 @@ class MLXStreamingServer:
                             stream=True,
                         )
                     else:
-                        raise Exception("Text-only model API not available and vision API failed") from None
+                        raise Exception(
+                            "Text-only model API not available and vision API failed"
+                        ) from None
 
                 # Track generator for cleanup
                 with self.clients_lock:
                     if client_id in self.client_generators:
                         self.client_generators[client_id].append(response_generator)
 
-            full_response = ""
-            max_timeout = 60  # 60 seconds max for inference
-
-            for token in response_generator:
-                # Check if we should stop
-                if stop_event.is_set():
-                    break
-
-                # Check timeout
-                if time.time() - inference_start > max_timeout:
-                    raise TimeoutError(f"Inference exceeded {max_timeout}s timeout")
-
-                full_response += token
-                if not self._safe_send(
-                    websocket,
-                    json.dumps({"type": "token", "content": token, "timestamp": data["timestamp"]}),
-                    loop,
-                ):
-                    break  # Connection closed, stop streaming
-
-            # Remove generator from tracking
-            with self.clients_lock:
-                if (
-                    client_id in self.client_generators
-                    and response_generator in self.client_generators[client_id]
-                ):
-                    self.client_generators[client_id].remove(response_generator)
-
-            # Send completion with inference time
-            inference_time = time.time() - inference_start
-            self._safe_send(
-                websocket,
-                json.dumps(
-                    {
-                        "type": "response_complete",
-                        "full_text": full_response,
-                        "timestamp": data["timestamp"],
-                        "input_type": "text",
-                        "inference_time": inference_time,
-                    }
-                ),
-                loop,
+            # Use common streaming method
+            self._stream_response(
+                response_generator, websocket, loop, client_id, stop_event, data, "text"
             )
-
-            # Track performance per client
-            with self.clients_lock:
-                if client_id in self.client_frame_counts:
-                    self.client_frame_counts[client_id] += 1
-                    frame_count = self.client_frame_counts[client_id]
-                    if frame_count % 10 == 0:
-                        print(
-                            f"Client {client_id}: Processed {frame_count} inputs, last inference: {inference_time:.2f}s"
-                        )
 
         except Exception as e:
             self._safe_send(
@@ -556,12 +540,12 @@ class MLXStreamingServer:
                 value = int(config_update["candidateCount"])
                 # MLX typically only supports 1 candidate
                 if value != 1:
-                    print("Warning: MLX models typically support candidateCount=1 only")
+                    logger.warning("MLX models typically support candidateCount=1 only")
                 with self.config_lock:
                     self.config["candidateCount"] = value
                 updated["candidateCount"] = value
             except (ValueError, TypeError):
-                print(f"Invalid candidateCount value: {config_update['candidateCount']}")
+                logger.warning(f"Invalid candidateCount value: {config_update['candidateCount']}")
 
         if "maxOutputTokens" in config_update:
             try:
@@ -571,9 +555,9 @@ class MLXStreamingServer:
                         self.config["maxOutputTokens"] = value
                     updated["maxOutputTokens"] = value
                 else:
-                    print(f"Invalid maxOutputTokens value: {value} (must be positive)")
+                    logger.warning(f"Invalid maxOutputTokens value: {value} (must be positive)")
             except (ValueError, TypeError):
-                print(f"Invalid maxOutputTokens value: {config_update['maxOutputTokens']}")
+                logger.warning(f"Invalid maxOutputTokens value: {config_update['maxOutputTokens']}")
 
         if "temperature" in config_update:
             try:
@@ -584,7 +568,7 @@ class MLXStreamingServer:
                     self.config["temperature"] = temp
                 updated["temperature"] = temp
             except (ValueError, TypeError):
-                print(f"Invalid temperature value: {config_update['temperature']}")
+                logger.warning(f"Invalid temperature value: {config_update['temperature']}")
 
         if "topP" in config_update:
             try:
@@ -595,7 +579,7 @@ class MLXStreamingServer:
                     self.config["topP"] = top_p
                 updated["topP"] = top_p
             except (ValueError, TypeError):
-                print(f"Invalid topP value: {config_update['topP']}")
+                logger.warning(f"Invalid topP value: {config_update['topP']}")
 
         if "topK" in config_update:
             try:
@@ -605,7 +589,7 @@ class MLXStreamingServer:
                     self.config["topK"] = top_k
                 updated["topK"] = top_k
             except (ValueError, TypeError):
-                print(f"Invalid topK value: {config_update['topK']}")
+                logger.warning(f"Invalid topK value: {config_update['topK']}")
 
         if "presencePenalty" in config_update:
             try:
@@ -614,7 +598,7 @@ class MLXStreamingServer:
                     self.config["presencePenalty"] = value
                 updated["presencePenalty"] = value
             except (ValueError, TypeError):
-                print(f"Invalid presencePenalty value: {config_update['presencePenalty']}")
+                logger.warning(f"Invalid presencePenalty value: {config_update['presencePenalty']}")
 
         if "frequencyPenalty" in config_update:
             try:
@@ -623,7 +607,9 @@ class MLXStreamingServer:
                     self.config["frequencyPenalty"] = value
                 updated["frequencyPenalty"] = value
             except (ValueError, TypeError):
-                print(f"Invalid frequencyPenalty value: {config_update['frequencyPenalty']}")
+                logger.warning(
+                    f"Invalid frequencyPenalty value: {config_update['frequencyPenalty']}"
+                )
 
         if "responseModalities" in config_update:
             try:
@@ -636,15 +622,15 @@ class MLXStreamingServer:
 
                     # Note: Current implementation only supports TEXT
                     if any(m != "TEXT" for m in modalities):
-                        print("Warning: Currently only TEXT modality is supported")
+                        logger.warning("Currently only TEXT modality is supported")
 
                     with self.config_lock:
                         self.config["responseModalities"] = modalities
                     updated["responseModalities"] = modalities
                 else:
-                    print("Invalid responseModalities value: must be a list")
+                    logger.warning("Invalid responseModalities value: must be a list")
             except Exception as e:
-                print(f"Error processing responseModalities: {e}")
+                logger.error(f"Error processing responseModalities: {e}")
 
         # Special handling for convenience max_tokens_image
         if "max_tokens_image" in config_update:
@@ -655,9 +641,11 @@ class MLXStreamingServer:
                         self.max_tokens_image = value
                     updated["max_tokens_image"] = value
                 else:
-                    print(f"Invalid max_tokens_image value: {value} (must be positive)")
+                    logger.warning(f"Invalid max_tokens_image value: {value} (must be positive)")
             except (ValueError, TypeError):
-                print(f"Invalid max_tokens_image value: {config_update['max_tokens_image']}")
+                logger.warning(
+                    f"Invalid max_tokens_image value: {config_update['max_tokens_image']}"
+                )
 
         # Send confirmation with updated fields and full current config
         with self.config_lock:
@@ -673,12 +661,71 @@ class MLXStreamingServer:
             )
         )
 
+    async def shutdown(self):
+        """Gracefully shutdown the server"""
+        logger.info("Shutting down server...")
+
+        # Stop accepting new connections
+        self.shutdown_event.set()
+
+        # Close all active WebSocket connections
+        if self.active_connections:
+            logger.info(f"Closing {len(self.active_connections)} active connections...")
+            close_tasks = [ws.close() for ws in self.active_connections]
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+
+        # Signal all client threads to stop
+        with self.clients_lock:
+            for stop_event in self.client_stop_events.values():
+                stop_event.set()
+
+        # Wait a bit for threads to finish
+        await asyncio.sleep(0.5)
+
+        # Close the server
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+
+        # Clean up MLX resources
+        if self.model is not None:
+            logger.info("Cleaning up MLX model...")
+            # MLX doesn't have explicit cleanup, but we can clear references
+            self.model = None
+            self.processor = None
+            # Force garbage collection to free MLX memory
+            import gc
+
+            gc.collect()
+            mx.metal.clear_cache()
+
+        logger.info("Server shutdown complete")
+
     async def start_server(self):
-        """Start the WebSocket server"""
-        print(f"Starting WebSocket server on port {self.port}")
-        async with websockets.serve(self.handle_client, "localhost", self.port):
-            print(f"Server running at ws://localhost:{self.port}")
-            await asyncio.Future()  # Run forever
+        """Start the WebSocket server with graceful shutdown"""
+        # Set up signal handlers
+        loop = asyncio.get_event_loop()
+
+        # Handle SIGINT (Ctrl+C) and SIGTERM
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown()))
+
+        logger.info(f"Starting WebSocket server on port {self.port}")
+        logger.info("Press Ctrl+C to gracefully shutdown")
+
+        try:
+            self.server = await websockets.serve(self.handle_client, "localhost", self.port)
+            logger.info(f"Server running at ws://localhost:{self.port}")
+
+            # Wait until shutdown is requested
+            await self.shutdown_event.wait()
+
+        except asyncio.CancelledError:
+            logger.info("Server task cancelled")
+        finally:
+            # Ensure cleanup happens even on unexpected exit
+            if not self.shutdown_event.is_set():
+                await self.shutdown()
 
 
 if __name__ == "__main__":
