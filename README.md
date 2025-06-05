@@ -92,7 +92,14 @@ The server will start on `ws://localhost:8765` by default.
 
 #### Command Line Arguments
 
-Specify a different model or port using command-line arguments:
+Configure the server at startup using command-line arguments:
+
+| Argument  | Type   | Default                              | Description                        |
+| --------- | ------ | ------------------------------------ | ---------------------------------- |
+| `--model` | string | `mlx-community/gemma-3-4b-it-4bit`   | MLX model name from HuggingFace    |
+| `--port`  | int    | `8765`                               | WebSocket server port              |
+
+Example usage:
 
 ```bash
 # Use a different model
