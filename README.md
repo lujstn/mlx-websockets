@@ -24,7 +24,7 @@ A high-performance WebSocket server for streaming multimodal data (text, images,
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/lucasjohnston/mlx-websockets.git
+git clone https://github.com/lujstn/mlx-websockets.git
 cd mlx-websockets
 ```
 
