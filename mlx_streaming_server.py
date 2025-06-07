@@ -12,41 +12,154 @@ import json
 import logging
 import os
 import signal
+import socket
+import sys
 import threading
 import time
+import warnings
 from queue import Empty, Queue
 from threading import Lock, RLock
 
-import mlx.core as mx
-import websockets
-import websockets.exceptions
-from mlx_vlm import generate, load
-from PIL import Image
+# Suppress specific warnings before imports
+warnings.filterwarnings("ignore", message="Disabling PyTorch because PyTorch >= 2.1 is required")
+warnings.filterwarnings("ignore", message="None of PyTorch, TensorFlow >= 2.0, or Flax have been found")
+warnings.filterwarnings("ignore", message="The torchvision.datapoints and torchvision.transforms.v2 namespaces are still Beta")
+warnings.filterwarnings("ignore", message="`resume_download` is deprecated")
+warnings.filterwarnings("ignore", message="resource_tracker: There appear to be")
+warnings.filterwarnings("ignore", category=UserWarning, module="multiprocessing.resource_tracker")
 
-try:
-    from mlx_lm import generate as text_generate
-except ImportError:
-    text_generate = None  # Will handle gracefully if not available
+# Suppress specific loggers
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:multiprocessing.resource_tracker"
 
-# Configure logging
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Configure logging - will be set up after parsing args
 logger = logging.getLogger(__name__)
+
+# Rich console support for better output (optional)
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from rich.text import Text
+    from rich.theme import Theme
+    RICH_AVAILABLE = True
+    
+    # Custom color theme
+    custom_theme = Theme({
+        "white": "#fffbeb",      # Primary text and important information
+        "cream": "#faf6e6",      # Softer white for loading text
+        "dim_cream": "#E3DDDD",
+        "pink": "#ff79c6",       # Accents, emphasis, and special highlights
+        "purple": "#a07ae1",     # Secondary information and decorative elements
+        "bold_purple": "bold #a07ae1",
+        "yellow": "#ffd230",     # Warnings and transitional states
+        "bold_yellow": "bold #ffd230",
+        "cyan": "#00d3f2",       # Interactive elements, URLs, and key values
+        "green": "#50fa7b",      # Keep default green for success
+        "red": "#ff5555",        # Keep default red for errors
+        "dim": "#a07ae1",        # Use purple for dim/secondary text
+        "bold_white": "bold #fffbeb",  # Bold white text
+    })
+    
+    console = Console(theme=custom_theme)
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+def create_elapsed_time_column():
+    """Create a custom elapsed time column with colourful styling"""
+    from rich.progress import ProgressColumn
+    from rich.text import Text
+    
+    class ColourElapsedColumn(ProgressColumn):
+        """Custom elapsed time column with colourful styling"""
+        
+        def render(self, task):
+            colour="cream"
+            elapsed = task.finished_time if task.finished else task.elapsed
+            if elapsed is None:
+                return Text("-:--:--", style=colour)
+            else:
+                # Convert to timedelta and format
+                import datetime
+                td = datetime.timedelta(seconds=max(0, int(elapsed)))
+                return Text(str(td), style=colour)
+    
+    return ColourElapsedColumn()
+
+
+# Import heavy dependencies with loading indicator
+def _import_dependencies(debug=False):
+    """Import MLX and other heavy dependencies with loading indicator"""
+    global mx, websockets, generate, load, Image, text_generate
+    
+    if not debug and RICH_AVAILABLE:
+        with Progress(
+            SpinnerColumn(style="purple"),
+            TextColumn("[cream][progress.description]{task.description}[/cream]"),
+            BarColumn(pulse_style="purple"),
+            create_elapsed_time_column(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Loading PyTorch and dependencies...", total=None)
+            
+            import mlx.core as mx
+            progress.update(task, description="Loading WebSockets...")
+            
+            import websockets as ws
+            websockets = ws
+            progress.update(task, description="Loading MLX models...")
+            
+            from mlx_vlm import generate as gen, load as ld
+            generate = gen
+            load = ld
+            progress.update(task, description="Loading PIL...")
+            
+            from PIL import Image as img
+            Image = img
+            progress.update(task, description="Loading optional text generation...")
+            
+            try:
+                from mlx_lm import generate as text_gen
+                text_generate = text_gen
+            except ImportError:
+                text_generate = None
+            
+            progress.update(task, description="Dependencies loaded!", completed=True)
+    else:
+        # Normal imports without progress bar
+        import mlx.core as mx
+        import websockets as ws
+        websockets = ws
+        from mlx_vlm import generate as gen, load as ld
+        generate = gen
+        load = ld
+        from PIL import Image as img
+        Image = img
+        
+        try:
+            from mlx_lm import generate as text_gen
+            text_generate = text_gen
+        except ImportError:
+            text_generate = None
 
 
 class MLXStreamingServer:
-    def __init__(self, model_name="mlx-community/gemma-3-4b-it-4bit", port=8765):
+    def __init__(self, model_name="mlx-community/gemma-3-4b-it-4bit", port=8765, host="0.0.0.0", debug=False):
         """
         Initialize the MLX WebSocket Streaming Server
 
         Args:
             model_name: MLX model from HuggingFace (Gemma 3 4bit model recommended)
             port: WebSocket server port (default 8765)
+            host: Host to bind to (default 0.0.0.0 for all interfaces)
+            debug: Enable debug logging (default False)
         """
         self.model_name = model_name
         self.port = port
+        self.host = host
+        self.debug = debug
         self.model = None
         self.processor = None
 
@@ -82,23 +195,74 @@ class MLXStreamingServer:
         self.active_connections = set()  # Track active WebSocket connections
         self.server = None  # Will hold the WebSocket server
 
-        logger.info(f"Loading model: {model_name}")
+        if not debug:
+            if RICH_AVAILABLE:
+                console.print(f"[cream]Loading model:[/cream] [yellow]{model_name}[/yellow]")
+            else:
+                # ANSI codes: white=#fffbeb approx, yellow=#ffd230
+                print(f"\033[97mLoading model:\033[0m \033[93m{model_name}\033[0m...")
+        else:
+            logger.info(f"Loading model: {model_name}")
         self._load_model()
 
     def _load_model(self):
         """Load the MLX model and processor"""
         try:
-            self.model, self.processor = load(self.model_name)
-            logger.info("Model loaded successfully!")
-            logger.info(f"Memory usage: {mx.get_active_memory() / 1024**3:.2f} GB")
+            # Capture warnings during model loading
+            with warnings.catch_warnings(record=True) as caught_warnings:
+                warnings.simplefilter("always")
+                
+                if not self.debug and RICH_AVAILABLE:
+                    with Progress(
+                        SpinnerColumn(style="pink"),
+                        TextColumn("[cream][progress.description]{task.description}[/cream]"),
+                        BarColumn(pulse_style="pink"),
+                        create_elapsed_time_column(),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        task = progress.add_task("[cream]Downloading model files...[/cream]", total=None)
+                        self.model, self.processor = load(self.model_name)
+                        progress.update(task, description="Model loaded!", completed=True)
+                else:
+                    self.model, self.processor = load(self.model_name)
+                
+                # Show non-critical warnings in grey if any
+                if caught_warnings and self.debug:
+                    for w in caught_warnings:
+                        if "Xet Storage" in str(w.message):
+                            continue  # Skip Xet storage warnings
+                        logger.debug(f"Warning: {w.message}")
+            
+            if not self.debug:
+                if RICH_AVAILABLE:
+                    console.print("[green]✓[/green] [cream]Model loaded successfully![/cream]")
+                else:
+                    print(f"\033[92m✓\033[0m \033[97mModel loaded successfully!\033[0m")
+            else:
+                logger.info("Model loaded successfully!")
+                logger.info(f"Memory usage: {mx.get_active_memory() / 1024**3:.2f} GB")
         except Exception as e:
-            logger.error(f"Error loading model: {e}")
+            if not self.debug:
+                if RICH_AVAILABLE:
+                    console.print(f"[red]✗[/red] [cream]Error loading model:[/cream] {e}")
+                else:
+                    print(f"\033[91m✗\033[0m \033[97mError loading model:\033[0m {e}")
+            else:
+                logger.error(f"Error loading model: {e}")
             raise
 
     async def handle_client(self, websocket, path):
         """Handle WebSocket client connections"""
         client_id = websocket.remote_address
-        logger.info(f"Client connected: {client_id}")
+        if self.debug:
+            logger.info(f"Client connected: {client_id}")
+        else:
+            if RICH_AVAILABLE:
+                console.print(f"[green]→[/green] [pink]Client connected:[/pink] [cyan]{client_id[0]}:{client_id[1]}[/cyan]")
+            else:
+                # ANSI: green=92, pink=95, cyan=96
+                print(f"\033[92m→\033[0m \033[95mClient connected:\033[0m \033[96m{client_id[0]}:{client_id[1]}\033[0m")
 
         # Track this connection for shutdown
         self.active_connections.add(websocket)
@@ -205,9 +369,22 @@ class MLXStreamingServer:
                     await self._handle_config(data, websocket)
 
         except websockets.exceptions.ConnectionClosed:
-            logger.info(f"Client disconnected: {client_id}")
+            if self.debug:
+                logger.info(f"Client disconnected: {client_id}")
+            else:
+                if RICH_AVAILABLE:
+                    console.print(f"[yellow]←[/yellow] [pink]Client disconnected:[/pink] [cyan]{client_id[0]}:{client_id[1]}[/cyan]")
+                else:
+                    # ANSI: yellow=93
+                    print(f"\033[93m←\033[0m \033[95mClient disconnected:\033[0m \033[96m{client_id[0]}:{client_id[1]}\033[0m")
         except Exception as e:
-            logger.error(f"Error handling client {client_id}: {e}", exc_info=True)
+            if self.debug:
+                logger.error(f"Error handling client {client_id}: {e}", exc_info=True)
+            else:
+                if RICH_AVAILABLE:
+                    console.print(f"[red]✗[/red] [cream]Error with client[/cream] [cyan]{client_id[0]}:{client_id[1]}[/cyan]: {e}")
+                else:
+                    print(f"\033[91m✗\033[0m \033[97mError with client\033[0m \033[96m{client_id[0]}:{client_id[1]}\033[0m: {e}")
         finally:
             # Remove from active connections
             self.active_connections.discard(websocket)
@@ -226,7 +403,8 @@ class MLXStreamingServer:
             if "processing_thread" in locals():
                 processing_thread.join(timeout=2.0)
                 if processing_thread.is_alive():
-                    logger.warning(f"Processing thread for {client_id} didn't stop cleanly")
+                    if self.debug:
+                        logger.warning(f"Processing thread for {client_id} didn't stop cleanly")
 
             # Clean up client state with lock
             with self.clients_lock:
@@ -254,9 +432,16 @@ class MLXStreamingServer:
                 # Timeout is expected - check if we should stop
                 continue
             except Exception as e:
-                logger.error(f"Error processing input for client {client_id}: {e}")
+                if self.debug:
+                    logger.error(f"Error processing input for client {client_id}: {e}")
+                else:
+                    if RICH_AVAILABLE:
+                        console.print(f"[red]✗[/red] [cream]Processing error:[/cream] {e}")
+                    else:
+                        print(f"\033[91m✗\033[0m \033[97mProcessing error:\033[0m {e}")
 
-        logger.debug(f"Processing thread stopped for client {client_id}")
+        if self.debug:
+            logger.debug(f"Processing thread stopped for client {client_id}")
 
     def _safe_send(self, websocket, message, loop):
         """Safely send message to websocket, handling connection errors"""
@@ -271,7 +456,7 @@ class MLXStreamingServer:
             asyncio.TimeoutError,
             Exception,
         ) as e:
-            if not isinstance(e, (websockets.exceptions.ConnectionClosedOK, asyncio.TimeoutError)):
+            if self.debug and not isinstance(e, (websockets.exceptions.ConnectionClosedOK, asyncio.TimeoutError)):
                 # Only log if it's not a "no close frame" error (common in tests)
                 error_msg = str(e)
                 if "no close frame received or sent" not in error_msg:
@@ -323,7 +508,7 @@ class MLXStreamingServer:
                 if client_id in self.client_frame_counts:
                     self.client_frame_counts[client_id] += 1
                     frame_count = self.client_frame_counts[client_id]
-                    if frame_count % 10 == 0:
+                    if frame_count % 10 == 0 and self.debug:
                         logger.debug(
                             f"Client {client_id}: Processed {frame_count} inputs, last inference: {inference_time:.2f}s"
                         )
@@ -540,12 +725,14 @@ class MLXStreamingServer:
                 value = int(config_update["candidateCount"])
                 # MLX typically only supports 1 candidate
                 if value != 1:
-                    logger.warning("MLX models typically support candidateCount=1 only")
+                    if self.debug:
+                        logger.warning("MLX models typically support candidateCount=1 only")
                 with self.config_lock:
                     self.config["candidateCount"] = value
                 updated["candidateCount"] = value
             except (ValueError, TypeError):
-                logger.warning(f"Invalid candidateCount value: {config_update['candidateCount']}")
+                if self.debug:
+                    logger.warning(f"Invalid candidateCount value: {config_update['candidateCount']}")
 
         if "maxOutputTokens" in config_update:
             try:
@@ -555,9 +742,11 @@ class MLXStreamingServer:
                         self.config["maxOutputTokens"] = value
                     updated["maxOutputTokens"] = value
                 else:
-                    logger.warning(f"Invalid maxOutputTokens value: {value} (must be positive)")
+                    if self.debug:
+                        logger.warning(f"Invalid maxOutputTokens value: {value} (must be positive)")
             except (ValueError, TypeError):
-                logger.warning(f"Invalid maxOutputTokens value: {config_update['maxOutputTokens']}")
+                if self.debug:
+                    logger.warning(f"Invalid maxOutputTokens value: {config_update['maxOutputTokens']}")
 
         if "temperature" in config_update:
             try:
@@ -568,7 +757,8 @@ class MLXStreamingServer:
                     self.config["temperature"] = temp
                 updated["temperature"] = temp
             except (ValueError, TypeError):
-                logger.warning(f"Invalid temperature value: {config_update['temperature']}")
+                if self.debug:
+                    logger.warning(f"Invalid temperature value: {config_update['temperature']}")
 
         if "topP" in config_update:
             try:
@@ -579,7 +769,8 @@ class MLXStreamingServer:
                     self.config["topP"] = top_p
                 updated["topP"] = top_p
             except (ValueError, TypeError):
-                logger.warning(f"Invalid topP value: {config_update['topP']}")
+                if self.debug:
+                    logger.warning(f"Invalid topP value: {config_update['topP']}")
 
         if "topK" in config_update:
             try:
@@ -589,7 +780,8 @@ class MLXStreamingServer:
                     self.config["topK"] = top_k
                 updated["topK"] = top_k
             except (ValueError, TypeError):
-                logger.warning(f"Invalid topK value: {config_update['topK']}")
+                if self.debug:
+                    logger.warning(f"Invalid topK value: {config_update['topK']}")
 
         if "presencePenalty" in config_update:
             try:
@@ -598,7 +790,8 @@ class MLXStreamingServer:
                     self.config["presencePenalty"] = value
                 updated["presencePenalty"] = value
             except (ValueError, TypeError):
-                logger.warning(f"Invalid presencePenalty value: {config_update['presencePenalty']}")
+                if self.debug:
+                    logger.warning(f"Invalid presencePenalty value: {config_update['presencePenalty']}")
 
         if "frequencyPenalty" in config_update:
             try:
@@ -607,9 +800,10 @@ class MLXStreamingServer:
                     self.config["frequencyPenalty"] = value
                 updated["frequencyPenalty"] = value
             except (ValueError, TypeError):
-                logger.warning(
-                    f"Invalid frequencyPenalty value: {config_update['frequencyPenalty']}"
-                )
+                if self.debug:
+                    logger.warning(
+                        f"Invalid frequencyPenalty value: {config_update['frequencyPenalty']}"
+                    )
 
         if "responseModalities" in config_update:
             try:
@@ -621,16 +815,18 @@ class MLXStreamingServer:
                     ]
 
                     # Note: Current implementation only supports TEXT
-                    if any(m != "TEXT" for m in modalities):
+                    if any(m != "TEXT" for m in modalities) and self.debug:
                         logger.warning("Currently only TEXT modality is supported")
 
                     with self.config_lock:
                         self.config["responseModalities"] = modalities
                     updated["responseModalities"] = modalities
                 else:
-                    logger.warning("Invalid responseModalities value: must be a list")
+                    if self.debug:
+                        logger.warning("Invalid responseModalities value: must be a list")
             except Exception as e:
-                logger.error(f"Error processing responseModalities: {e}")
+                if self.debug:
+                    logger.error(f"Error processing responseModalities: {e}")
 
         # Special handling for convenience max_tokens_image
         if "max_tokens_image" in config_update:
@@ -641,11 +837,13 @@ class MLXStreamingServer:
                         self.max_tokens_image = value
                     updated["max_tokens_image"] = value
                 else:
-                    logger.warning(f"Invalid max_tokens_image value: {value} (must be positive)")
+                    if self.debug:
+                        logger.warning(f"Invalid max_tokens_image value: {value} (must be positive)")
             except (ValueError, TypeError):
-                logger.warning(
-                    f"Invalid max_tokens_image value: {config_update['max_tokens_image']}"
-                )
+                if self.debug:
+                    logger.warning(
+                        f"Invalid max_tokens_image value: {config_update['max_tokens_image']}"
+                    )
 
         # Send confirmation with updated fields and full current config
         with self.config_lock:
@@ -663,14 +861,34 @@ class MLXStreamingServer:
 
     async def shutdown(self):
         """Gracefully shutdown the server"""
-        logger.info("Shutting down server...")
+        if not self.debug:
+            if RICH_AVAILABLE:
+                with Progress(
+                    SpinnerColumn(style="pink"),
+                    TextColumn("[dim_cream]Shutting down server...[/dim_cream]"),
+                    console=console,
+                    transient=False,
+                ) as progress:
+                    task = progress.add_task("shutdown", total=None)
+                    # Brief delay to show the spinner
+                    await asyncio.sleep(0.3)
+            else:
+                print("\n\n\033[93mShutting down server...\033[0m")
+        else:
+            logger.info("Shutting down server...")
 
         # Stop accepting new connections
         self.shutdown_event.set()
 
         # Close all active WebSocket connections
         if self.active_connections:
-            logger.info(f"Closing {len(self.active_connections)} active connections...")
+            if not self.debug:
+                if RICH_AVAILABLE:
+                    console.print(f"[yellow]Closing {len(self.active_connections)} active connections...[/yellow]")
+                else:
+                    print(f"\033[93mClosing {len(self.active_connections)} active connections...\033[0m")
+            else:
+                logger.info(f"Closing {len(self.active_connections)} active connections...")
             close_tasks = [ws.close() for ws in self.active_connections]
             await asyncio.gather(*close_tasks, return_exceptions=True)
 
@@ -689,7 +907,13 @@ class MLXStreamingServer:
 
         # Clean up MLX resources
         if self.model is not None:
-            logger.info("Cleaning up MLX model...")
+            if not self.debug:
+                if RICH_AVAILABLE:
+                    console.print(f"[yellow]Cleaning up MLX model...[/yellow]")
+                else:
+                    print("\033[93mCleaning up MLX model...\033[0m")
+            else:
+                logger.info("Cleaning up MLX model...")
             # MLX doesn't have explicit cleanup, but we can clear references
             self.model = None
             self.processor = None
@@ -697,9 +921,40 @@ class MLXStreamingServer:
             import gc
 
             gc.collect()
-            mx.metal.clear_cache()
+            if mx is not None:
+                mx.metal.clear_cache()
 
-        logger.info("Server shutdown complete")
+        if not self.debug:
+            if RICH_AVAILABLE:
+                console.print("[green]✓[/green] [cream]Server shutdown complete[/cream]\n")
+            else:
+                print("\033[92m✓\033[0m \033[97mServer shutdown complete\033[0m\n")
+        else:
+            logger.info("Server shutdown complete")
+
+    def _get_network_addresses(self):
+        """Get all local network addresses"""
+        addresses = []
+        try:
+            # Get hostname
+            hostname = socket.gethostname()
+            # Get all IPs associated with hostname
+            host_ips = socket.gethostbyname_ex(hostname)[2]
+            # Filter out loopback addresses
+            for ip in host_ips:
+                if not ip.startswith("127."):
+                    addresses.append(ip)
+            
+            # Alternative method using socket connection
+            if not addresses:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    # Connect to a public DNS server
+                    s.connect(("8.8.8.8", 80))
+                    addresses.append(s.getsockname()[0])
+        except Exception:
+            pass
+        
+        return addresses
 
     async def start_server(self):
         """Start the WebSocket server with graceful shutdown"""
@@ -710,18 +965,58 @@ class MLXStreamingServer:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown()))
 
-        logger.info(f"Starting WebSocket server on port {self.port}")
-        logger.info("Press Ctrl+C to gracefully shutdown")
-
+        # React-style startup messages
+        if RICH_AVAILABLE:
+            console.print("\n" + "[cyan]=" * 60 + "[/cyan]")
+            console.print(f"[bold_white]MLX WebSocket Streaming Server v0.1.0[/bold_white]")
+            console.print("[cyan]=" * 60 + "[/cyan]\n")
+            
+            console.print(f"[cream]Model:[/cream] [bold_white]{self.model_name}[/bold_white]")
+            console.print(f"[cream]Memory:[/cream] [white]{mx.get_active_memory() / 1024**3:.2f} GB[/white]\n") if mx else console.print("[cream]Memory:[/cream] [red]Not available[/red]\n")
+        else:
+            # ANSI: purple=35 (magenta), white=97
+            print("\n" + "\033[35m" + "=" * 60 + "\033[0m")
+            print(f"\033[97mMLX WebSocket Streaming Server v0.1.0\033[0m")
+            print("\033[35m" + "=" * 60 + "\033[0m" + "\n")
+            
+            print(f"\033[97mModel:\033[0m \033[95m{self.model_name}\033[0m")
+            print(f"\033[97mMemory:\033[0m \033[95m{mx.get_active_memory() / 1024**3:.2f}\033[0m GB\n") if mx else print("\033[97mMemory:\033[0m \033[35mNot available\033[0m\n")
+        
         try:
-            self.server = await websockets.serve(self.handle_client, "localhost", self.port)
-            logger.info(f"Server running at ws://localhost:{self.port}")
+            self.server = await websockets.serve(self.handle_client, self.host, self.port)
+            
+            # Display connection URLs React-style
+            if RICH_AVAILABLE:
+                console.print(f"[cream]Server running at:[/cream]\n")
+                console.print(f"  [white]Local:[/white]            [cyan]ws://localhost:{self.port}[/cyan]")
+                
+                # Get network addresses
+                network_addresses = self._get_network_addresses()
+                if network_addresses:
+                    for ip in network_addresses:
+                        console.print(f"  [white]On Your Network:[/white]  [cyan]ws://{ip}:{self.port}[/cyan]")
+                
+                console.print(f"\n[cream]Note: To connect from other devices, ensure they are on the same network.[/cream]")
+                console.print(f"[white]Press[/white] [bold_white]Ctrl+C[/bold_white] [white]to stop the server.[/white]\n")
+            else:
+                print(f"\033[97mServer running at:\033[0m\n")
+                print(f"  \033[97mLocal:\033[0m            \033[96mws://localhost:{self.port}\033[0m")
+                
+                # Get network addresses
+                network_addresses = self._get_network_addresses()
+                if network_addresses:
+                    for ip in network_addresses:
+                        print(f"  \033[97mOn Your Network:\033[0m  \033[96mws://{ip}:{self.port}\033[0m")
+                
+                print(f"\n\033[35mNote: To connect from other devices, ensure they are on the same network.\033[0m")
+                print(f"\033[97mPress\033[0m \033[95mCtrl+C\033[0m \033[97mto stop the server.\033[0m\n")
 
             # Wait until shutdown is requested
             await self.shutdown_event.wait()
 
         except asyncio.CancelledError:
-            logger.info("Server task cancelled")
+            if self.debug:
+                logger.info("Server task cancelled")
         finally:
             # Ensure cleanup happens even on unexpected exit
             if not self.shutdown_event.is_set():
@@ -731,16 +1026,63 @@ class MLXStreamingServer:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="MLX WebSocket Streaming Server")
+    parser = argparse.ArgumentParser(
+        description="MLX WebSocket Streaming Server - Real-time multimodal AI inference server for Apple Silicon Macs. "
+                    "Supports streaming video frames, images, and text chat with local MLX models.",
+        epilog="Example: python mlx_streaming_server.py --model mlx-community/gemma-3-4b-it-4bit --port 8765"
+    )
     parser.add_argument(
         "--model",
         default="mlx-community/gemma-3-4b-it-4bit",
         help="MLX model name from HuggingFace",
     )
     parser.add_argument("--port", type=int, default=8765, help="WebSocket server port")
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind to (use 'localhost' for local-only access)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--show-warnings",
+        action="store_true",
+        help="Show all warnings (including harmless ones)",
+    )
 
     args = parser.parse_args()
 
+    # Configure logging based on debug flag
+    if args.debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+    else:
+        # Suppress most logs in production mode
+        logging.basicConfig(
+            level=logging.ERROR,
+            format="%(message)s",
+        )
+        # Suppress transformers download messages
+        logging.getLogger("transformers").setLevel(logging.ERROR)
+        logging.getLogger("mlx").setLevel(logging.ERROR)
+        logging.getLogger("websockets").setLevel(logging.ERROR)
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+        logging.getLogger("filelock").setLevel(logging.ERROR)
+        
+    # Re-enable warnings if requested
+    if args.show_warnings:
+        warnings.resetwarnings()
+        if RICH_AVAILABLE:
+            console.print("[purple italic]Note: Showing all warnings. These are typically harmless.[/purple italic]")
+
+    # Import dependencies with loading indicator
+    _import_dependencies(debug=args.debug)
+
     # Start server
-    server = MLXStreamingServer(model_name=args.model, port=args.port)
+    server = MLXStreamingServer(model_name=args.model, port=args.port, host=args.host, debug=args.debug)
     asyncio.run(server.start_server())
