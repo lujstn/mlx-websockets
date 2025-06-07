@@ -10,6 +10,10 @@ A high-performance WebSocket server for streaming multimodal data (text, images,
 - 🎛️ **Flexible model support** - Use any compatible model from Hugging Face
 - 🎬 **Stream processing** - Queue-based architecture with frame dropping for real-time performance
 - 💬 **Token streaming** - Real-time token-by-token response streaming
+- 🎨 **Rich terminal UI** - Colorful output with progress bars (optional)
+- 🛡️ **Graceful shutdown** - Clean termination with SIGINT/SIGTERM handling
+- 🔍 **Debug mode** - Comprehensive logging for development
+- 🌐 **Network discovery** - Automatic detection of all network interfaces
 
 ## Requirements
 
@@ -78,7 +82,12 @@ make all
 python mlx_streaming_server.py
 ```
 
-The server will start on `ws://localhost:8765` by default.
+The server will start on `ws://localhost:8765` by default and display all available network addresses for connection. The startup includes:
+
+- Colorful terminal UI with progress bars (if `rich` is installed)
+- Model loading with memory usage display
+- Network interface discovery showing all connection URLs
+- Automatic suppression of harmless warnings from dependencies
 
 ### Supported Input Types
 
@@ -94,10 +103,13 @@ The server will start on `ws://localhost:8765` by default.
 
 Configure the server at startup using command-line arguments:
 
-| Argument  | Type   | Default                              | Description                        |
-| --------- | ------ | ------------------------------------ | ---------------------------------- |
-| `--model` | string | `mlx-community/gemma-3-4b-it-4bit`   | MLX model name from HuggingFace    |
-| `--port`  | int    | `8765`                               | WebSocket server port              |
+| Argument          | Type   | Default                              | Description                                         |
+| ----------------- | ------ | ------------------------------------ | --------------------------------------------------- |
+| `--model`         | string | `mlx-community/gemma-3-4b-it-4bit`   | MLX model name from HuggingFace                     |
+| `--port`          | int    | `8765`                               | WebSocket server port                               |
+| `--host`          | string | `0.0.0.0`                            | Host to bind to (use 'localhost' for local-only)    |
+| `--debug`         | flag   | `False`                              | Enable debug logging                                |
+| `--show-warnings` | flag   | `False`                              | Show all warnings (including harmless ones)         |
 
 Example usage:
 
@@ -108,8 +120,14 @@ python mlx_streaming_server.py --model "mlx-community/your-model-id"
 # Change port
 python mlx_streaming_server.py --port 8080
 
-# Both
-python mlx_streaming_server.py --model "mlx-community/your-model-id" --port 8080
+# Enable debug mode
+python mlx_streaming_server.py --debug
+
+# Local-only access
+python mlx_streaming_server.py --host localhost
+
+# Multiple options
+python mlx_streaming_server.py --model "mlx-community/your-model-id" --port 8080 --debug
 ```
 
 #### Runtime Configuration
@@ -128,7 +146,7 @@ You can update generation parameters at runtime via WebSocket. All fields are op
 | `responseModalities` | array   | ["TEXT"] | Output types (currently only TEXT is supported)                 |
 | `max_tokens_image`   | integer | 100      | Special: max tokens for image inputs                            |
 
-**Note**: `presencePenalty` and `frequencyPenalty` are converted to MLX's `repetition_penalty` parameter for similar effect.
+**Note**: `presencePenalty` and `frequencyPenalty` are converted to MLX's `repetition_penalty` parameter for similar effect. The conversion maps penalty range [0, 2] to repetition_penalty range [1.0, 1.5], using the stronger of the two penalties when both are specified. The repetition context size is fixed at 20 tokens.
 
 Example configuration update:
 
@@ -277,9 +295,12 @@ Optimized for Apple Silicon with Gemma 3's 4-bit model:
 
 - **Memory**: ~4.5-6GB total (2.6GB model weights + 2-4GB runtime)
 - **Processing**: Queue-based with max 10 frames buffered
-- **Image sizing**: Auto-resizes to 768px max dimension
-- **Token limits**: 200 tokens for text, 100 for images
+- **Image sizing**: Auto-resizes to 768px max dimension  
+- **Token limits**: 200 tokens for text, 100 for images (configurable)
 - **Frame dropping**: Maintains real-time performance under load
+- **Timeouts**: 60s max inference, 5s WebSocket send, 2s thread shutdown
+- **Performance tracking**: Per-client frame counting and inference time measurement
+- **Memory display**: Shows active GPU memory usage on startup
 
 ## Troubleshooting
 
@@ -321,8 +342,9 @@ This server works with MLX-compatible models from Hugging Face:
 
 ## Security Considerations
 
-- By default, the server only accepts connections from localhost
-- For network access, modify the server binding in `start_server()`
+- By default, the server binds to `0.0.0.0` (all interfaces)
+- For local-only access, use `--host localhost`
+- The server displays all available network addresses on startup
 - Always use WSS (WebSocket Secure) for production deployments
 - Implement authentication before exposing to networks
 
@@ -332,11 +354,21 @@ The server uses a multi-threaded, queue-based architecture:
 
 1. **Main Thread**: Handles WebSocket connections and async I/O
 2. **Processing Threads**: One per client for model inference
-3. **Queue System**: Buffers requests with automatic frame dropping
+3. **Queue System**: Buffers requests with automatic frame dropping (max 10 items)
 4. **Thread Safety**: All shared resources protected by locks
    - `RLock` for client state and configuration (allows re-entrant locking)
    - `Lock` for model inference (ensures single inference at a time)
    - Thread-safe message passing between async and sync contexts
+5. **Client Management**: Per-client state tracking with:
+   - Dedicated message queues
+   - Stop events for graceful shutdown
+   - Frame counters for performance monitoring
+   - Active generator tracking for cleanup
+6. **Graceful Shutdown**: 
+   - Signal handlers for SIGINT/SIGTERM
+   - Active connection tracking and closure
+   - Processing thread termination with timeout
+   - MLX cache clearing and garbage collection
 
 ## Contributing
 
