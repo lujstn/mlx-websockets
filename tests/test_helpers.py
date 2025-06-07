@@ -229,6 +229,13 @@ class ServerTestContext:
         self.mocks = self.mock_context.__enter__()
 
         # Import server after mocking
+        import mlx_streaming_server
+        
+        # Call _import_dependencies to initialize the lazy-loaded globals
+        # This is what the CLI does before creating the server
+        mlx_streaming_server._import_dependencies(debug=True)
+        
+        # Now we can safely use the MLXStreamingServer class
         from mlx_streaming_server import MLXStreamingServer
 
         # Create server

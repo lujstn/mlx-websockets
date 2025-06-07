@@ -8,6 +8,9 @@ from unittest.mock import Mock, patch
 import pytest
 import websockets
 
+# Import the server module first, then initialize dependencies
+import mlx_streaming_server
+mlx_streaming_server._import_dependencies(debug=True)
 from mlx_streaming_server import MLXStreamingServer
 
 
