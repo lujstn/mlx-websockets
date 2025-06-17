@@ -181,3 +181,4 @@ temp/
 *.pid
 *.lock
 .process_cache/
+mlx_websockets/_version.py
