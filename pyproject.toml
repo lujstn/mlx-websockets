@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "setuptools-scm>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-websockets"
-version = "0.1.0"
+dynamic = ["version"]
 description = "WebSocket streaming server for MLX models"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ authors = [
     {name = "Lucas Johnston Kurilov", email = "code@lucasco.de"},
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -21,6 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Operating System :: MacOS :: MacOS X",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "mlx>=0.15.0",
@@ -29,7 +31,12 @@ dependencies = [
     "websockets>=12.0",
     "Pillow>=10.0.0",
     "numpy>=1.24.0",
+    "rich>=13.0.0",
+    "psutil>=5.9.0",
 ]
+
+[project.scripts]
+mlx = "mlx_websockets.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -77,7 +84,12 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F401", "F811", "E402"]  # Allow unused imports, redefinitions, and module-level imports not at top in tests
-"mlx_streaming_server.py" = ["F401", "F841"]  # Allow unused imports and variables for optional dependencies
+"mlx_websockets/server.py" = ["F401", "F841"]  # Allow unused imports and variables for optional dependencies
+
+[tool.setuptools_scm]
+write_to = "mlx_websockets/_version.py"
+version_scheme = "post-release"
+local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -86,8 +98,25 @@ testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+# Timeout for tests to prevent hanging
+timeout = 30
+timeout_method = "thread"
+
+# Markers
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "benchmark: marks tests as performance benchmarks"
+]
+
+# Logging
+log_cli = true
+log_cli_level = "WARNING"
+
 filterwarnings = [
     "ignore::UserWarning:torchvision.datapoints",
     "ignore::UserWarning:torchvision.transforms.v2",
     "ignore::pytest.PytestDeprecationWarning:pytest_asyncio"
 ]
+addopts = "--strict-markers -vv --cov=mlx_websockets --cov-report=html --cov-report=term-missing"

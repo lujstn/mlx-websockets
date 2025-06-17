@@ -8,11 +8,10 @@ from unittest.mock import Mock, patch
 import pytest
 import websockets
 
-# Import the server module first, then initialize dependencies
-import mlx_streaming_server
+# Import the server module
+from mlx_websockets.server import MLXStreamingServer, _import_dependencies
 
-mlx_streaming_server._import_dependencies(debug=True)
-from mlx_streaming_server import MLXStreamingServer
+_import_dependencies(debug=True)
 
 
 class TestBasicInference:
@@ -21,7 +20,7 @@ class TestBasicInference:
     @pytest.fixture
     def mock_server(self):
         """Create a server with mocked components"""
-        with patch("mlx_streaming_server.load") as mock_load:
+        with patch("mlx_websockets.server.load") as mock_load:
             mock_model = Mock()
             mock_processor = Mock()
             mock_load.return_value = (mock_model, mock_processor)
@@ -30,18 +29,18 @@ class TestBasicInference:
 
     def test_text_generation_logic(self, mock_server):
         """Test text generation logic without threading"""
-        with patch("mlx_streaming_server.generate") as mock_generate:
+        with patch("mlx_websockets.server.generate") as mock_generate:
             mock_generate.return_value = iter(["Hello", " ", "world", "!"])
 
             # Test that generate is called with correct parameters
             server = mock_server
 
-            # Mock the model lock
-            with server.model_lock:
+            # Mock the inference semaphore
+            with server.inference_semaphore:
                 with server.config_lock:
                     # Verify config values
                     assert server.config["temperature"] == 0.7
-                    assert server.config["maxOutputTokens"] == 200
+                    assert server.config["maxTokens"] == 200
                     assert server.config["topP"] == 1.0
                     assert server.config["topK"] == 50
 
@@ -84,7 +83,7 @@ class TestBasicInference:
 
     def test_model_loading(self):
         """Test model loading behavior"""
-        with patch("mlx_streaming_server.load") as mock_load:
+        with patch("mlx_websockets.server.load") as mock_load:
             mock_model = Mock()
             mock_processor = Mock()
             mock_load.return_value = (mock_model, mock_processor)

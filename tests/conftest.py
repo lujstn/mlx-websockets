@@ -13,9 +13,9 @@ from PIL import Image
 
 from .test_helpers import (
     ThreadTracker,
-)
-from .test_helpers import (
-    mock_mlx_models as mock_mlx_models_context,
+    mock_mlx_base,  # Import the session-scoped base fixture
+    mock_mlx_models,  # Import the new pytest fixture
+    mock_mlx_models_context,  # Keep for backward compatibility
 )
 
 # Suppress warnings from transformers about missing PyTorch/TensorFlow
@@ -37,9 +37,17 @@ warnings.filterwarnings("ignore", message=".*torchvision.datapoints.*", category
 warnings.filterwarnings("ignore", message=".*torchvision.transforms.v2.*", category=UserWarning)
 
 
+# Note: We use the simpler context manager approach here because
+# the mlx_websockets.server module needs mocks in place before
+# import time, not just during test execution.
 @pytest.fixture
 def mock_mlx_models():
-    """Mock MLX model loading for all tests"""
+    """Mock MLX model loading for all tests.
+
+    This fixture uses a context manager instead of pytest's monkeypatch
+    because the server module's lazy loading pattern requires mocks to
+    be in sys.modules before the server module is imported.
+    """
     with mock_mlx_models_context() as mocks:
         yield mocks["model"], mocks["processor"]
 
@@ -128,7 +136,7 @@ def create_test_messages(message_type="text", count=1, content=None):
                 "prompt": content or f"Describe image {i}",
             }
         elif message_type == "config":
-            msg = {"type": "config", "temperature": 0.8, "maxOutputTokens": 300}
+            msg = {"type": "config", "temperature": 0.8, "maxTokens": 300}
         else:
             msg = {"type": "unknown"}
 
@@ -137,14 +145,24 @@ def create_test_messages(message_type="text", count=1, content=None):
     return messages
 
 
-# Pytest configuration
-def pytest_configure(config):
-    """Configure pytest with custom markers"""
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
-    config.addinivalue_line("markers", "integration: marks tests as integration tests")
-    config.addinivalue_line("markers", "benchmark: marks tests as performance benchmarks")
+@pytest.fixture(autouse=True)
+async def cleanup_between_tests():
+    """Minimal cleanup between tests for better isolation"""
+    # Before test
+    yield
+
+    # After test - minimal cleanup
+    await asyncio.sleep(0.1)  # Brief pause for pending operations
+
+    # Cancel any pending tasks in the current event loop
+    try:
+        # Get all tasks in current loop and cancel them
+        tasks = asyncio.all_tasks(asyncio.get_event_loop())
+        for task in tasks:
+            if not task.done() and task != asyncio.current_task():
+                task.cancel()
+    except RuntimeError:
+        pass
 
 
 # Async test helpers

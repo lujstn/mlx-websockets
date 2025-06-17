@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+
+    - name: Build distribution
+      run: python -m build
+
+    - name: Check distribution
+      run: twine check dist/*
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+  test:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.11']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Install from wheel
+      run: |
+        python -m pip install --upgrade pip
+        pip install dist/*.whl
+
+    - name: Test installation
+      run: |
+        mlx --help
+        python -c "import mlx_websockets; print(mlx_websockets.__version__)"
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/*
+        generate_release_notes: true
+        draft: false
+        prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, 'rc')
+
+    steps:
+    - name: Checkout current repo
+      uses: actions/checkout@v4
+
+    - name: Get version from tag
+      id: version
+      run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Calculate SHA256 for GitHub release
+      id: sha256
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        URL="https://github.com/lujstn/mlx-websockets/archive/refs/tags/${VERSION}.tar.gz"
+        echo "Fetching from: $URL"
+
+        # Download and calculate SHA256
+        SHA256=$(curl -fsSL "$URL" | shasum -a 256 | awk '{print $1}')
+        echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+        echo "Successfully calculated SHA256: $SHA256"
+
+    - name: Update Homebrew formula
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        SHA256="${{ steps.sha256.outputs.sha256 }}"
+
+        # Update the formula file with GitHub release URL
+        sed -i "s|url \".*\"|url \"https://github.com/lujstn/mlx-websockets/archive/refs/tags/${VERSION}.tar.gz\"|g" Formula/mlx-websockets.rb
+        sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|g" Formula/mlx-websockets.rb
+
+        # Also update the main formula for reference
+        cp Formula/mlx-websockets.rb homebrew-formula.rb
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore: update Homebrew formula for v${{ steps.version.outputs.version }}"
+        branch: update-homebrew-${{ steps.version.outputs.version }}
+        title: "chore: update Homebrew formula for v${{ steps.version.outputs.version }}"
+        body: |
+          Updates the Homebrew formula for mlx-websockets version ${{ steps.version.outputs.version }}
+
+          - Updated download URL to point to GitHub release tarball
+          - Updated SHA256 checksum: `${{ steps.sha256.outputs.sha256 }}`
+
+          This PR was automatically created by the release workflow.
+
+          After merging, users can install via:
+          ```bash
+          brew tap lujstn/mlx-websockets
+          brew install mlx-websockets
+          ```
+        delete-branch: true

@@ -25,6 +25,8 @@ A high-performance WebSocket server for streaming multimodal data (text, images,
 
 ## Installation
 
+### From Source
+
 1. **Clone the repository**:
 
 ```bash
@@ -32,16 +34,29 @@ git clone https://github.com/lujstn/mlx-websockets.git
 cd mlx-websockets
 ```
 
-2. **Install dependencies**:
+2. **Install the package**:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-3. **Verify MLX installation** _(optional)_:
+3. **Verify installation** _(optional)_:
 
 ```bash
-python -c "import mlx; print(mlx.__version__)"
+mlx help
+```
+
+### Via Homebrew
+
+```bash
+brew tap lujstn/mlx-websockets
+brew install mlx-websockets
+```
+
+To run as a background service with Homebrew:
+
+```bash
+brew services start mlx-websockets
 ```
 
 ## Development
@@ -79,7 +94,7 @@ make all
 ## Quick Start
 
 ```bash
-python mlx_streaming_server.py
+mlx serve
 ```
 
 The server will start on `ws://localhost:8765` by default and display all available network addresses for connection. The startup includes:
@@ -88,6 +103,19 @@ The server will start on `ws://localhost:8765` by default and display all availa
 - Model loading with memory usage display
 - Network interface discovery showing all connection URLs
 - Automatic suppression of harmless warnings from dependencies
+
+### Running in Background
+
+```bash
+# Start server in background
+mlx background serve
+
+# Check status
+mlx status
+
+# Stop background server
+mlx background stop
+```
 
 ### Supported Input Types
 
@@ -103,32 +131,50 @@ The server will start on `ws://localhost:8765` by default and display all availa
 
 Configure the server at startup using command-line arguments:
 
-| Argument          | Type   | Default                              | Description                                         |
-| ----------------- | ------ | ------------------------------------ | --------------------------------------------------- |
-| `--model`         | string | `mlx-community/gemma-3-4b-it-4bit`   | MLX model name from HuggingFace                     |
-| `--port`          | int    | `8765`                               | WebSocket server port                               |
-| `--host`          | string | `0.0.0.0`                            | Host to bind to (use 'localhost' for local-only)    |
-| `--debug`         | flag   | `False`                              | Enable debug logging                                |
-| `--show-warnings` | flag   | `False`                              | Show all warnings (including harmless ones)         |
+| Argument              | Type   | Default                              | Description                                         |
+| --------------------- | ------ | ------------------------------------ | --------------------------------------------------- |
+| `--model`             | string | `mlx-community/gemma-3-4b-it-4bit`   | MLX model name from HuggingFace                     |
+| `--port`              | int    | `8765`                               | WebSocket server port                               |
+| `--auto-port`         | flag   | `False`                              | Enable automatic port discovery if preferred port is busy |
+| `--host`              | string | `0.0.0.0`                            | Host to bind to (use 'localhost' for local-only)    |
+| `--trust-remote-code` | flag   | `False`                              | Enable trusting remote code for tokenizer           |
+| `--tokenizer-config`  | string | None                                 | Tokenizer config.json file path                     |
+| `--chat-template`     | string | None                                 | Chat template or template name                       |
+| `--max-tokens`        | int    | `512`                                | Maximum number of tokens to generate                |
+| `--temperature`       | float  | `0.7`                                | Sampling temperature                                 |
+| `--seed`              | int    | None                                 | Random seed for generation                           |
+| `--debug`             | flag   | `False`                              | Enable debug logging                                |
+| `--show-warnings`     | flag   | `False`                              | Show all warnings (including harmless ones)         |
 
 Example usage:
 
 ```bash
 # Use a different model
-python mlx_streaming_server.py --model "mlx-community/your-model-id"
+mlx serve --model "mlx-community/your-model-id"
 
-# Change port
-python mlx_streaming_server.py --port 8080
+# Change port with auto-discovery
+mlx serve --port 8080 --auto-port
 
 # Enable debug mode
-python mlx_streaming_server.py --debug
+mlx serve --debug
 
 # Local-only access
-python mlx_streaming_server.py --host localhost
+mlx serve --host localhost
+
+# Configure generation parameters
+mlx serve --max-tokens 1000 --temperature 0.9 --seed 42
+
+# Trust remote code for specialized models
+mlx serve --model "custom-model" --trust-remote-code
 
 # Multiple options
-python mlx_streaming_server.py --model "mlx-community/your-model-id" --port 8080 --debug
+mlx serve --model "mlx-community/your-model-id" --port 8080 --debug --auto-port
+
+# Run in background
+mlx background serve
 ```
+
+**Note**: The background server automatically finds an available port if the default (8765) is in use.
 
 #### Runtime Configuration
 
@@ -295,7 +341,7 @@ Optimized for Apple Silicon with Gemma 3's 4-bit model:
 
 - **Memory**: ~4.5-6GB total (2.6GB model weights + 2-4GB runtime)
 - **Processing**: Queue-based with max 10 frames buffered
-- **Image sizing**: Auto-resizes to 768px max dimension  
+- **Image sizing**: Auto-resizes to 768px max dimension
 - **Token limits**: 200 tokens for text, 100 for images (configurable)
 - **Frame dropping**: Maintains real-time performance under load
 - **Timeouts**: 60s max inference, 5s WebSocket send, 2s thread shutdown
@@ -320,7 +366,8 @@ Optimized for Apple Silicon with Gemma 3's 4-bit model:
 
 3. **WebSocket connection issues:**
    - Check if port 8765 is already in use
-   - Try a different port: `python mlx_streaming_server.py --port 8080`
+   - Try a different port: `mlx serve --port 8080`
+   - The background server automatically finds an available port if the default is in use
 
 ### Memory Management
 
@@ -364,7 +411,7 @@ The server uses a multi-threaded, queue-based architecture:
    - Stop events for graceful shutdown
    - Frame counters for performance monitoring
    - Active generator tracking for cleanup
-6. **Graceful Shutdown**: 
+6. **Graceful Shutdown**:
    - Signal handlers for SIGINT/SIGTERM
    - Active connection tracking and closure
    - Processing thread termination with timeout

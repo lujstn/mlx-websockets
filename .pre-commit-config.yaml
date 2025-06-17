@@ -6,37 +6,36 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
-      - id: check-case-conflict
-      - id: check-merge-conflict
+      - id: check-json
       - id: check-toml
-      - id: debug-statements
+      - id: check-merge-conflict
       - id: mixed-line-ending
+      - id: debug-statements
+      - id: detect-private-key
 
-  - repo: https://github.com/psf/black
-    rev: 24.3.0
-    hooks:
-      - id: black
-        language_version: python3
-
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.3.4
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.11
     hooks:
       - id: ruff
         args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-psutil]
+        args: [--ignore-missing-imports]
+        files: ^mlx_websockets/
 
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: v3.20.0
+    rev: v3.13.0
     hooks:
       - id: commitizen
         stages: [commit-msg]
 
-  - repo: local
-    hooks:
-      - id: pytest
-        name: pytest
-        entry: pytest
-        language: system
-        types: [python]
-        pass_filenames: false
-        always_run: true
-        stages: [push]
+ci:
+  autofix_commit_msg: "style: auto-fix pre-commit hooks"
+  autofix_prs: true
+  autoupdate_commit_msg: "chore: update pre-commit hooks"
+  autoupdate_schedule: weekly

@@ -9,10 +9,9 @@ pkill -f pytest || echo "No pytest processes found"
 
 # Kill any processes running our test files
 echo "Looking for test file processes..."
-pkill -f "test_inference.py" || echo "No test_inference.py processes"
 pkill -f "test_integration.py" || echo "No test_integration.py processes"
-pkill -f "test_benchmarks.py" || echo "No test_benchmarks.py processes"
-pkill -f "mlx_streaming_server.py" || echo "No mlx_streaming_server.py processes"
+pkill -f "test_performance.py" || echo "No test_performance.py processes"
+pkill -f "mlx_websockets" || echo "No mlx_websockets processes"
 
 # Check for processes on our WebSocket port
 echo "Checking port 8765..."
@@ -20,7 +19,7 @@ lsof -ti:8765 | xargs kill -9 2>/dev/null || echo "Port 8765 is clear"
 
 # Clean up any Python processes that might be stuck
 echo "Looking for stuck Python processes with our code..."
-ps aux | grep -E "(pytest|test_.*\.py|mlx_streaming)" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || echo "No stuck processes found"
+ps aux | grep -E "(pytest|test_.*\.py|mlx_websockets)" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || echo "No stuck processes found"
 
 echo "Cleanup complete!"
 

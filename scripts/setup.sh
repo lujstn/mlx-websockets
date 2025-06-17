@@ -4,7 +4,7 @@ echo "Setting up MLX WebSocket development environment..."
 
 # Install development dependencies
 echo "Installing development dependencies..."
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # Install pre-commit hooks
 echo "Installing pre-commit hooks..."
@@ -18,6 +18,8 @@ pre-commit run --all-files
 echo "Setup complete! You're ready to start developing."
 echo ""
 echo "Important commands:"
+echo "  mlx serve     - Run the WebSocket server"
+echo "  mlx help      - Show CLI help"
 echo "  make lint     - Run linters"
 echo "  make format   - Auto-format code"
 echo "  make test     - Run tests"

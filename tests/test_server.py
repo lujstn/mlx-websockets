@@ -6,99 +6,134 @@ import asyncio
 import base64
 import io
 import json
-import sys
 import threading
 import time
-from unittest.mock import MagicMock, Mock, patch
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import websockets
 from PIL import Image
 
-from .test_helpers import ServerTestContext
+from .test_helpers import (
+    RealServerTestContext,
+    mock_mlx_models,
+    simulate_concurrent_clients,
+    wait_for_thread_count,
+)
 
 
 class TestMLXStreamingServer:
     """Test the MLX Streaming Server core functionality"""
 
-    def test_server_initialization(self):
+    @pytest.mark.asyncio
+    async def test_server_initialization(self):
         """Test server initializes with correct defaults"""
-        with ServerTestContext() as ctx:
+        async with RealServerTestContext() as ctx:
             assert ctx.server.config["temperature"] == 0.7
-            assert ctx.server.config["maxOutputTokens"] == 200
-            assert ctx.server.max_tokens_image == 100  # Changed from None
+            assert ctx.server.config["maxTokens"] == 200
+            assert ctx.server.max_tokens_image == 100
 
-    def test_config_update_temperature(self):
-        """Test temperature config update"""
-        with ServerTestContext() as ctx:
-            # Directly update config since _update_config doesn't exist
-            with ctx.server.config_lock:
-                ctx.server.config["temperature"] = 0.9
+    @pytest.mark.asyncio
+    async def test_real_websocket_connection(self):
+        """Test real WebSocket client-server connection"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
+
+            # Send a simple message
+            await client.send({"type": "text_input", "content": "Hello, server!", "context": ""})
+
+            # Receive responses
+            messages = await client.receive_all(timeout=5.0)
+
+            # Verify we got proper responses
+            assert len(messages) > 0
+            assert any(msg["type"] == "response_start" for msg in messages)
+            assert any(msg["type"] == "token" for msg in messages)
+            assert any(msg["type"] == "response_complete" for msg in messages)
+
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_config_update_live(self):
+        """Test configuration updates through WebSocket"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
+
+            # Update config (using OpenAI-compatible parameter)
+            await client.send({"type": "config", "temperature": 0.9, "maxOutputTokens": 500})
+
+            # Give server time to process
+            await asyncio.sleep(0.1)
+
+            # Verify config was updated (converted to MLX-native parameter)
             assert ctx.server.config["temperature"] == 0.9
+            assert ctx.server.config["maxTokens"] == 500
 
-    def test_config_update_max_tokens(self):
-        """Test max tokens config update"""
-        with ServerTestContext() as ctx:
-            # Directly update config
-            with ctx.server.config_lock:
-                ctx.server.config["maxOutputTokens"] = 500
-            assert ctx.server.config["maxOutputTokens"] == 500
+            await client.close()
 
-    def test_client_state_management(self):
-        """Test client tracking and cleanup"""
-        with ServerTestContext() as ctx:
-            client_id = ("127.0.0.1", 12345)
+    @pytest.mark.asyncio
+    async def test_client_lifecycle(self):
+        """Test full client connection lifecycle"""
+        async with RealServerTestContext() as ctx:
+            # Track initial state
+            initial_clients = len(ctx.server.client_queues)
 
-            # Add client using actual attributes
-            with ctx.server.clients_lock:
-                ctx.server.client_queues[client_id] = Mock()
-                ctx.server.client_frame_counts[client_id] = 0
-                ctx.server.client_generators[client_id] = []
+            # Connect client
+            client = ctx.create_client()
+            await client.connect()
 
-            assert client_id in ctx.server.client_queues
+            # Verify client is tracked
+            await asyncio.sleep(0.1)
+            assert len(ctx.server.client_queues) == initial_clients + 1
 
-            # Manual cleanup since _cleanup_client doesn't exist
-            with ctx.server.clients_lock:
-                del ctx.server.client_queues[client_id]
-                del ctx.server.client_frame_counts[client_id]
-                del ctx.server.client_generators[client_id]
+            # Send and receive
+            await client.send({"type": "text_input", "content": "Test message"})
 
-            assert client_id not in ctx.server.client_queues
-            assert client_id not in ctx.server.client_frame_counts
-            assert client_id not in ctx.server.client_generators
+            messages = await client.receive_all()
+            assert len(messages) > 0
+
+            # Disconnect
+            await client.close()
+
+            # Verify cleanup
+            await asyncio.sleep(0.5)
+            assert len(ctx.server.client_queues) == initial_clients
 
 
 class TestMessageHandling:
-    """Test WebSocket message handling"""
+    """Test WebSocket message handling with real async operations"""
 
-    async def test_text_input_message_format(self):
-        """Test text input message format validation"""
-        with ServerTestContext() as ctx:
-            messages = []
-            websocket = ctx.create_websocket(messages)
-
-            # Valid text message
-            msg = {"type": "text_input", "content": "Test message", "context": ""}
-
-            # Process directly to test format
-            data = {
-                "type": "text",
-                "timestamp": time.time(),
-                "prompt": msg["content"],
-                "context": msg["context"],
-                "source": "test",
-            }
-
-            # This should not raise any exceptions
-            ctx.server._process_text(
-                data, websocket, ctx.loop, ("127.0.0.1", 12345), threading.Event()
+    @pytest.mark.asyncio
+    async def test_text_processing_flow(self):
+        """Test complete text processing flow"""
+        async with RealServerTestContext() as ctx:
+            messages = await ctx.test_full_message_flow(
+                prompt="What is the capital of France?", expected_in_response="Generated response"
             )
 
-    async def test_image_input_message_format(self):
-        """Test image input message format validation"""
-        with ServerTestContext() as ctx:
-            messages = []
-            websocket = ctx.create_websocket(messages)
+            # Verify message structure
+            start_msgs = [m for m in messages if m["type"] == "response_start"]
+            token_msgs = [m for m in messages if m["type"] == "token"]
+            complete_msgs = [m for m in messages if m["type"] == "response_complete"]
+
+            assert len(start_msgs) == 1
+            assert len(token_msgs) > 0
+            assert len(complete_msgs) == 1
+
+            # Verify complete message has all fields
+            complete = complete_msgs[0]
+            assert "full_text" in complete
+            assert "inference_time" in complete
+            assert "timestamp" in complete
+            assert "input_type" in complete
+
+    @pytest.mark.asyncio
+    async def test_image_processing_flow(self):
+        """Test image processing with real async flow"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
 
             # Create test image
             img = Image.new("RGB", (100, 100), color="red")
@@ -106,246 +141,336 @@ class TestMessageHandling:
             img.save(img_buffer, format="PNG")
             img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
 
-            # Valid image message
-            msg = {
-                "type": "image_input",
-                "image": f"data:image/png;base64,{img_base64}",
-                "prompt": "What's in this image?",
-            }
-
-            # Process directly to test format
-            data = {
-                "type": "image",
-                "timestamp": time.time(),
-                "content": msg["image"],
-                "prompt": msg["prompt"],
-                "source": "test",
-            }
-
-            # This should not raise any exceptions
-            ctx.server._process_image(
-                data, websocket, ctx.loop, ("127.0.0.1", 12345), threading.Event()
+            # Send image
+            await client.send(
+                {
+                    "type": "image_input",
+                    "image": f"data:image/png;base64,{img_base64}",
+                    "prompt": "What's in this image?",
+                }
             )
 
-    async def test_config_message_format(self):
-        """Test configuration update message format"""
-        with ServerTestContext() as ctx:
-            # Valid config message - update directly since _update_config doesn't exist
-            with ctx.server.config_lock:
-                ctx.server.config["temperature"] = 0.8
-                ctx.server.config["maxOutputTokens"] = 300
+            # Receive responses
+            messages = await client.receive_all()
 
-            assert ctx.server.config["temperature"] == 0.8
-            assert ctx.server.config["maxOutputTokens"] == 300
+            # Verify processing
+            assert len(messages) > 0
+            assert any(msg["type"] == "response_complete" for msg in messages)
 
-    async def test_response_message_formats(self):
-        """Test response message formats sent by server"""
-        with ServerTestContext() as ctx:
-            messages = []
-            websocket = ctx.create_websocket(messages)
+            await client.close()
 
-            # Configure mock to return specific tokens
-            ctx.mocks["generate"].return_value = iter(["Hello", " ", "world"])
+    @pytest.mark.asyncio
+    async def test_streaming_tokens(self):
+        """Test that tokens are streamed in real-time"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
 
-            # Process text
-            ctx.process_text(websocket, "Test prompt")
+            # Send message
+            await client.send({"type": "text_input", "content": "Count to five"})
 
-            # Wait for processing
-            time.sleep(0.5)
+            # Collect tokens with timestamps
+            token_times = []
+            start_time = time.time()
 
-            # Parse messages
-            parsed = [json.loads(msg) for msg in messages]
+            while True:
+                msg = await client.receive(timeout=1.0)
+                if not msg:
+                    break
 
-            # Check message types
-            assert any(msg["type"] == "response_start" for msg in parsed)
-            assert any(msg["type"] == "token" for msg in parsed)
-            assert any(msg["type"] == "response_complete" for msg in parsed)
+                if msg["type"] == "token":
+                    token_times.append((msg["content"], time.time() - start_time))
+                elif msg["type"] == "response_complete":
+                    break
 
-            # Check response_complete has required fields
-            complete_msg = next(msg for msg in parsed if msg["type"] == "response_complete")
-            assert "full_text" in complete_msg
-            assert "inference_time" in complete_msg
-            assert complete_msg["full_text"] == "Hello world"
+            # Verify tokens arrived over time (not all at once)
+            assert len(token_times) > 2
+            time_diffs = [
+                token_times[i][1] - token_times[i - 1][1] for i in range(1, len(token_times))
+            ]
+            assert any(diff > 0.001 for diff in time_diffs)  # Some delay between tokens
 
-
-class TestImageProcessing:
-    """Test image processing functionality"""
-
-    def test_image_resize(self):
-        """Test image resizing for large images"""
-        with ServerTestContext():
-            # Create large image
-            large_img = Image.new("RGB", (2000, 2000), color="blue")
-
-            # Should be resized to max 768
-            max_size = 768
-            if max(large_img.size) > max_size:
-                large_img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
-            assert max(large_img.size) == max_size
-
-    def test_base64_image_decode(self):
-        """Test base64 image decoding"""
-        with ServerTestContext():
-            # Create test image
-            img = Image.new("RGB", (100, 100), color="green")
-            img_buffer = io.BytesIO()
-            img.save(img_buffer, format="PNG")
-            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-
-            # Test with data URL format
-            data_url = f"data:image/png;base64,{img_base64}"
-            if "," in data_url:
-                decoded_bytes = base64.b64decode(data_url.split(",")[1])
-            else:
-                decoded_bytes = base64.b64decode(data_url)
-
-            # Should be able to open as image
-            decoded_img = Image.open(io.BytesIO(decoded_bytes))
-            assert decoded_img.size == (100, 100)
+            await client.close()
 
 
-class TestThreadSafety:
-    """Test thread safety mechanisms"""
+class TestConcurrency:
+    """Test concurrent client handling"""
 
-    def test_locks_exist(self):
-        """Test that all necessary locks are created"""
-        with ServerTestContext() as ctx:
-            assert hasattr(ctx.server, "clients_lock")
-            assert hasattr(ctx.server, "config_lock")
-            assert hasattr(ctx.server, "model_lock")
+    @pytest.mark.asyncio
+    async def test_multiple_concurrent_clients(self):
+        """Test server handles multiple clients concurrently"""
+        async with RealServerTestContext() as ctx:
+            # Create multiple clients
+            num_clients = 5
+            clients = []
 
-            # Test they are the right types
-            assert isinstance(ctx.server.clients_lock, type(threading.RLock()))
-            assert isinstance(ctx.server.config_lock, type(threading.RLock()))
-            assert isinstance(ctx.server.model_lock, type(threading.Lock()))
+            for _i in range(num_clients):
+                client = ctx.create_client()
+                await client.connect()
+                clients.append(client)
 
+            # Send messages concurrently
+            async def send_and_receive(client, client_id):
+                await client.send(
+                    {"type": "text_input", "content": f"Message from client {client_id}"}
+                )
+                messages = await client.receive_all()
+                return len(messages) > 0
 
-class TestConfigurationValidation:
-    """Test configuration parameter validation"""
+            # Run all clients concurrently
+            results = await asyncio.gather(
+                *[send_and_receive(client, i) for i, client in enumerate(clients)]
+            )
 
-    def test_temperature_clamping(self):
-        """Test temperature values are clamped to valid range"""
-        with ServerTestContext() as ctx:
-            # Update config directly and test clamping in processing
-            # The server clamps values during inference, not on config update
-            with ctx.server.config_lock:
-                ctx.server.config["temperature"] = 5.0
-            # During inference, this would be clamped to 2.0
-            assert ctx.server.config["temperature"] == 5.0  # Raw value stored
+            # All should succeed
+            assert all(results)
 
-            with ctx.server.config_lock:
-                ctx.server.config["temperature"] = -1.0
-            assert ctx.server.config["temperature"] == -1.0  # Raw value stored
+            # Clean up
+            for client in clients:
+                await client.close()
 
-    def test_top_p_clamping(self):
-        """Test top_p values are stored as configured"""
-        with ServerTestContext() as ctx:
-            # Test values are stored as is
-            with ctx.server.config_lock:
-                ctx.server.config["topP"] = 2.0
-            assert ctx.server.config["topP"] == 2.0
+    @pytest.mark.asyncio
+    async def test_concurrent_message_ordering(self):
+        """Test that each client's messages are processed in order"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
 
-            with ctx.server.config_lock:
-                ctx.server.config["topP"] = -0.5
-            assert ctx.server.config["topP"] == -0.5
+            # Send multiple messages quickly
+            messages_sent = []
+            for i in range(5):
+                msg = f"Message {i}"
+                messages_sent.append(msg)
+                await client.send({"type": "text_input", "content": msg})
 
-    def test_top_k_validation(self):
-        """Test top_k values are stored as configured"""
-        with ServerTestContext() as ctx:
-            # Test values are stored as is
-            with ctx.server.config_lock:
-                ctx.server.config["topK"] = -5
-            assert ctx.server.config["topK"] == -5
+            # Collect all responses
+            all_responses = []
+            timeout = time.time() + 10
 
-            with ctx.server.config_lock:
-                ctx.server.config["topK"] = 40
-            assert ctx.server.config["topK"] == 40
+            while time.time() < timeout:
+                msg = await client.receive(timeout=0.5)
+                if not msg:
+                    break
+                all_responses.append(msg)
 
-    def test_max_tokens_validation(self):
-        """Test max tokens values are stored as configured"""
-        with ServerTestContext() as ctx:
-            # Test values are stored as is
-            with ctx.server.config_lock:
-                ctx.server.config["maxOutputTokens"] = 0
-            assert ctx.server.config["maxOutputTokens"] == 0
+                # Count complete messages
+                complete_count = sum(1 for m in all_responses if m["type"] == "response_complete")
+                if complete_count == len(messages_sent):
+                    break
 
-            with ctx.server.config_lock:
-                ctx.server.config["maxOutputTokens"] = 1000
-            assert ctx.server.config["maxOutputTokens"] == 1000
+            # Verify we got responses for all messages
+            complete_messages = [m for m in all_responses if m["type"] == "response_complete"]
+            assert len(complete_messages) == len(messages_sent)
+
+            await client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(20)  # Specific timeout for this test
+    async def test_thread_pool_stress(self):
+        """Test thread pool under load - focuses on functionality not cleanup timing"""
+        async with RealServerTestContext() as ctx:
+            # Simulate concurrent operations with fewer clients to reduce complexity
+            responses = await simulate_concurrent_clients(
+                ctx.actual_port, num_clients=3, messages_per_client=1
+            )
+
+            # Verify all clients got responses - this is the main test goal
+            assert len(responses) == 3
+            assert all(len(client_responses) > 0 for client_responses in responses)
+
+            # Verify responses contain expected message types
+            for client_responses in responses:
+                message_types = [msg.get("type") for msg in client_responses]
+                assert "response_start" in message_types
+                assert "response_complete" in message_types
 
 
 class TestErrorHandling:
-    """Test error handling and recovery"""
+    """Test error handling with real operations"""
 
-    def test_invalid_message_type(self):
-        """Test handling of unknown message types"""
-        with ServerTestContext() as ctx:
-            messages = []
-            ctx.create_websocket(messages)
+    @pytest.mark.asyncio
+    async def test_invalid_message_handling(self):
+        """Test server handles invalid messages gracefully"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
 
-            # Send invalid message type through direct processing
-            # The server should handle this gracefully
-            # Since we're testing internals, we'll verify the server doesn't crash
-            assert True  # If we get here, no crash occurred
+            # Send invalid message
+            await client.send({"type": "invalid_type", "data": "test"})
 
-    def test_connection_cleanup_on_error(self):
-        """Test client cleanup when errors occur"""
-        with ServerTestContext() as ctx:
-            client_id = ("127.0.0.1", 12345)
+            # Send valid message after
+            await client.send({"type": "text_input", "content": "Valid message"})
 
-            # Add client using actual attributes
-            with ctx.server.clients_lock:
-                ctx.server.client_queues[client_id] = Mock()
-                ctx.server.client_generators[client_id] = [Mock()]
+            # Should still get response for valid message
+            messages = await client.receive_all()
+            assert any(msg["type"] == "response_complete" for msg in messages)
 
-            # Manual cleanup since _cleanup_client doesn't exist
-            with ctx.server.clients_lock:
-                if client_id in ctx.server.client_queues:
-                    del ctx.server.client_queues[client_id]
-                if client_id in ctx.server.client_generators:
-                    del ctx.server.client_generators[client_id]
+            await client.close()
 
-            # Verify cleanup
-            assert client_id not in ctx.server.client_queues
-            assert client_id not in ctx.server.client_generators
+    @pytest.mark.asyncio
+    async def test_client_disconnect_cleanup(self):
+        """Test cleanup when client disconnects abruptly"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
+
+            # Start processing
+            await client.send(
+                {"type": "text_input", "content": "Start processing this long text..."}
+            )
+
+            # Disconnect abruptly (without proper close)
+            if client.websocket:
+                await client.websocket.close(code=1011, reason="Abrupt disconnect")
+
+            # Wait for cleanup
+            await asyncio.sleep(1.0)
+
+            # Verify server is still functional
+            new_client = ctx.create_client()
+            await new_client.connect()
+            await new_client.send({"type": "text_input", "content": "Still working?"})
+
+            messages = await new_client.receive_all()
+            assert len(messages) > 0
+
+            await new_client.close()
+
+    @pytest.mark.asyncio
+    async def test_generation_interruption(self):
+        """Test stopping generation mid-stream"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
+
+            # Send message
+            await client.send({"type": "text_input", "content": "Generate a very long response"})
+
+            # Receive a few tokens
+            token_count = 0
+            for _ in range(5):
+                msg = await client.receive(timeout=1.0)
+                if msg and msg["type"] == "token":
+                    token_count += 1
+
+            # Close connection mid-generation
+            await client.close()
+
+            # Verify we got some but not all tokens
+            assert token_count > 0
+            assert token_count < 20  # Should have interrupted before completion
 
 
-class TestPerformanceFeatures:
-    """Test performance-related features"""
+class TestThreadSafety:
+    """Test thread safety with real concurrent operations"""
 
-    def test_streaming_response(self):
-        """Test that responses are streamed token by token"""
-        with ServerTestContext() as ctx:
-            messages = []
-            websocket = ctx.create_websocket(messages)
+    @pytest.mark.asyncio
+    async def test_concurrent_config_updates(self):
+        """Test concurrent configuration updates"""
+        async with RealServerTestContext() as ctx:
+            clients = []
 
-            # Configure mock to return tokens slowly
-            tokens = ["Token1", " ", "Token2", " ", "Token3"]
-            ctx.mocks["generate"].return_value = iter(tokens)
+            # Create multiple clients
+            for _ in range(5):
+                client = ctx.create_client()
+                await client.connect()
+                clients.append(client)
 
-            # Process text
-            ctx.process_text(websocket, "Test")
+            # Update config concurrently from different clients
+            async def update_config(client, temp):
+                await client.send({"type": "config", "temperature": temp})
+
+            # Send concurrent updates
+            tasks = [update_config(client, 0.5 + i * 0.1) for i, client in enumerate(clients)]
+            await asyncio.gather(*tasks)
 
             # Wait for processing
-            time.sleep(0.5)
+            await asyncio.sleep(0.5)
 
-            # Parse messages
-            parsed = [json.loads(msg) for msg in messages]
-            token_messages = [msg for msg in parsed if msg["type"] == "token"]
+            # Config should have one of the values (last write wins)
+            assert 0.4 <= ctx.server.config["temperature"] <= 1.0
 
-            # Should have one message per token
-            assert len(token_messages) == len(tokens)
-            assert [msg["content"] for msg in token_messages] == tokens
+            # Clean up
+            for client in clients:
+                await client.close()
 
-    def test_memory_tracking(self):
-        """Test memory usage tracking"""
-        with ServerTestContext() as ctx:
-            # Memory tracking happens during initialization
-            # The server prints memory usage but doesn't store it as an attribute
-            # Just verify the server initialized without errors
-            assert ctx.server.model is not None
-            assert ctx.server.processor is not None
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(20)  # Add timeout like successful thread test
+    async def test_thread_local_resources(self):
+        """Test thread-local resource management"""
+        async with RealServerTestContext() as ctx:
+            # Track thread IDs used for processing
+            thread_ids = set()
+
+            # Monkey-patch to track thread IDs
+            original_process = ctx.server._process_text
+
+            def tracking_process(*args, **kwargs):
+                thread_ids.add(threading.current_thread().ident)
+                return original_process(*args, **kwargs)
+
+            ctx.server._process_text = tracking_process
+
+            # Send multiple messages with reduced load (3 clients, 1 message each)
+            results = await simulate_concurrent_clients(
+                ctx.actual_port, num_clients=3, messages_per_client=1
+            )
+
+            # Should have used multiple threads
+            assert len(thread_ids) > 1
+            assert all(len(r) > 0 for r in results)
+
+
+class TestMemoryManagement:
+    """Test memory and resource management"""
+
+    @pytest.mark.asyncio
+    async def test_generator_cleanup(self):
+        """Test that generators are properly cleaned up"""
+        async with RealServerTestContext() as ctx:
+            client = ctx.create_client()
+            await client.connect()
+
+            # Track generator count
+            initial_count = len(ctx.server.client_generators)
+
+            # Process message
+            await client.send({"type": "text_input", "content": "Test message"})
+
+            # Wait for completion
+            await client.receive_all()
+
+            # Close and wait for cleanup
+            await client.close()
+            await asyncio.sleep(0.5)
+
+            # Generators should be cleaned up
+            final_count = len(ctx.server.client_generators)
+            assert final_count <= initial_count
+
+    @pytest.mark.asyncio
+    async def test_queue_cleanup(self):
+        """Test that client queues are properly cleaned up"""
+        async with RealServerTestContext() as ctx:
+            # Track initial state
+            initial_queues = len(ctx.server.client_queues)
+
+            # Create and disconnect multiple clients
+            for i in range(5):
+                client = ctx.create_client()
+                await client.connect()
+
+                await client.send({"type": "text_input", "content": f"Message {i}"})
+
+                # Don't wait for response, just disconnect
+                await client.close()
+
+            # Wait for cleanup
+            await asyncio.sleep(1.0)
+
+            # All queues should be cleaned up
+            final_queues = len(ctx.server.client_queues)
+            assert final_queues == initial_queues
 
 
 if __name__ == "__main__":
