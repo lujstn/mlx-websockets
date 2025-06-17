@@ -5,6 +5,8 @@ help:
 	@echo "  make format    - Auto-format code with ruff"
 	@echo "  make test      - Run all tests"
 	@echo "  make test-cov  - Run tests with coverage"
+	@echo "  make test-timing - Run tests with timing information"
+	@echo "  make test-fast - Run only fast tests (exclude slow)"
 	@echo "  make clean     - Remove Python cache files and build artifacts"
 	@echo "  make build     - Build distribution packages"
 	@echo "  make release   - Create a new release (tag, build, notes)"
@@ -52,6 +54,11 @@ test-performance:
 test-fast:
 	@echo "Running fast tests only..."
 	pytest -v -m "not slow and not benchmark"
+
+.PHONY: test-timing
+test-timing:
+	@echo "Running tests with timing information..."
+	pytest -v --durations=0
 
 .PHONY: clean
 clean:

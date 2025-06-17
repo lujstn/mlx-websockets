@@ -131,6 +131,8 @@ class TestErrorScenarios:
             for client in clients:
                 await client.close()
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     @pytest.mark.asyncio
     async def test_client_queue_overflow(self):
         """Test handling when client message queue is full"""

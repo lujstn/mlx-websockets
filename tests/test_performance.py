@@ -117,6 +117,8 @@ class TestPerformance:
 
             await client.close()
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     @pytest.mark.asyncio
     async def test_response_time_consistency(self):
         """Test response time consistency"""

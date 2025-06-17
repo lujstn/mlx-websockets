@@ -42,20 +42,11 @@ jobs:
       run: mypy mlx_websockets --ignore-missing-imports
 
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12']
-        exclude:
-          # MLX requires macOS for full functionality
-          - os: ubuntu-latest
-            python-version: '3.9'
-          - os: ubuntu-latest
-            python-version: '3.10'
-          - os: ubuntu-latest
-            python-version: '3.12'
+        python-version: ['3.9', '3.12']  # Test min and max supported versions
 
     steps:
     - uses: actions/checkout@v4
@@ -80,20 +71,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev]"
 
-    - name: Run unit tests
+    - name: Run fast unit tests
       run: |
-        pytest tests/ -v --tb=short \
+        pytest tests/ -v --tb=short -m "not slow" \
           --ignore=tests/test_end_to_end.py \
           --cov=mlx_websockets --cov-report=xml --cov-report=term
 
+    - name: Run slow tests
+      if: matrix.python-version == '3.12' || github.ref == 'refs/heads/main'  # Run on latest Python or main branch
+      run: |
+        pytest tests/ -v --tb=short -m "slow" --no-cov
+
     - name: Run integration tests
-      if: matrix.os == 'macos-latest' && matrix.python-version == '3.11'
+      if: matrix.python-version == '3.12' || github.ref == 'refs/heads/main'  # Run on latest Python or main branch
       run: |
         pytest tests/test_integration.py tests/test_end_to_end.py -v --tb=short --no-cov \
           -k "not test_latency_distribution"
 
     - name: Upload coverage to Codecov
-      if: matrix.os == 'macos-latest' && matrix.python-version == '3.11'
+      if: matrix.python-version == '3.12'  # Upload coverage from latest Python
       uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
@@ -165,11 +161,10 @@ jobs:
 
   test-install:
     needs: build
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ['3.11']
+        python-version: ['3.12']  # Test install only on latest Python
 
     steps:
     - uses: actions/checkout@v4

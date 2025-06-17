@@ -403,6 +403,8 @@ class TestRealConcurrentOperations:
 class TestEdgeCasesReal:
     """Test edge cases with real connections"""
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     @pytest.mark.asyncio
     async def test_rapid_connect_disconnect(self):
         """Test handling rapid client connects/disconnects"""

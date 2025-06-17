@@ -48,6 +48,8 @@ class TestEndToEnd:
         except Exception:
             pass
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     def test_background_daemon_lifecycle(self, cleanup_daemon):
         """Test basic daemon lifecycle: start, status check, stop."""
         # Mock the MLX model loading to speed up tests
@@ -101,6 +103,8 @@ class TestEndToEnd:
         assert result.returncode != 0
         assert "invalid float value" in result.stderr or "could not convert" in result.stderr
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     def test_daemon_port_collision_handling(self, cleanup_daemon):
         """Test daemon handles port collisions gracefully."""
         from .test_helpers import mock_mlx_models

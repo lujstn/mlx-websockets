@@ -163,6 +163,8 @@ class TestAsyncWebSocketHandling:
             # Verify shutdown event is set
             assert server.shutdown_event.is_set()
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     @pytest.mark.asyncio
     async def test_async_message_streaming(self):
         """Test async message streaming to clients."""

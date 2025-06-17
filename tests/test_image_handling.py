@@ -187,6 +187,8 @@ class TestImageHandling:
 
             await client.close()
 
+    @pytest.mark.slow
+    @pytest.mark.timeout(60)
     @pytest.mark.asyncio
     async def test_rapid_frame_sending(self):
         """Test handling of rapid frame sending (queue overflow)"""
