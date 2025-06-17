@@ -560,9 +560,9 @@ class RealServerTestContext:
                 full_response = "".join(
                     msg.get("content", "") for msg in messages if msg.get("type") == "token"
                 )
-                assert (
-                    expected_in_response in full_response
-                ), f"Expected '{expected_in_response}' in response, got: {full_response}"
+                assert expected_in_response in full_response, (
+                    f"Expected '{expected_in_response}' in response, got: {full_response}"
+                )
 
             return messages
 
