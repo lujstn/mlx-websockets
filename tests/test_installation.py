@@ -108,7 +108,12 @@ class TestPackageInstallation:
         assert pkg_metadata["Name"] == "mlx-websockets"
         assert "Summary" in pkg_metadata or "Description" in pkg_metadata
         assert "Author" in pkg_metadata or "Author-email" in pkg_metadata
-        assert "License" in pkg_metadata
+        # License can be in different fields depending on PEP 639 adoption
+        assert (
+            "License" in pkg_metadata
+            or "License-Expression" in pkg_metadata
+            or pkg_metadata.get("License-File")
+        )
         assert "Requires-Python" in pkg_metadata
 
         # Check Python version requirement
