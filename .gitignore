@@ -182,3 +182,4 @@ temp/
 *.lock
 .process_cache/
 mlx_websockets/_version.py
+mlx_websockets/_version.py

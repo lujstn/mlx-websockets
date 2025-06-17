@@ -43,10 +43,16 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "pytest-timeout>=2.1.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
     "pre-commit>=3.0.0",
     "commitizen>=3.0.0",
+    "mypy>=1.0.0",
+    "build>=0.10.0",
+    "twine>=4.0.0",
+    "types-Pillow>=10.0.0",
+    "types-websockets>=12.0",
 ]
 
 [tool.black]
@@ -119,4 +125,4 @@ filterwarnings = [
     "ignore::UserWarning:torchvision.transforms.v2",
     "ignore::pytest.PytestDeprecationWarning:pytest_asyncio"
 ]
-addopts = "--strict-markers -vv --cov=mlx_websockets --cov-report=html --cov-report=term-missing"
+addopts = "--strict-markers -vv --cov=mlx_websockets --cov-report=html --cov-report=term-missing --cov-report=xml"
