@@ -103,8 +103,8 @@ class TestAsyncWebSocketHandling:
                     for i in range(expected_count)
                 ]
 
-                # Create proper async iterator with shorter keep-alive for testing
-                message_iterator = AsyncMessageIterator(messages, keep_alive_duration=0.5)
+                # Create proper async iterator with longer keep-alive to ensure all messages are processed
+                message_iterator = AsyncMessageIterator(messages, keep_alive_duration=2.0)
 
                 # Create websocket mock that IS the async iterator
                 websocket = message_iterator

@@ -146,7 +146,7 @@ Configure the server at startup using command-line arguments:
 
 | Argument              | Type   | Default                            | Description                                               |
 | --------------------- | ------ | ---------------------------------- | --------------------------------------------------------- |
-| `--model`             | string | `mlx-community/gemma-3-4b-it-4bit` | MLX model name from HuggingFace                           |
+| `--model`             | string | `mlx-community/gemma-3-4b-it-4bit` | Hugging Face model ID (any MLX-compatible model)          |
 | `--port`              | int    | `8765`                             | WebSocket server port                                     |
 | `--auto-port`         | flag   | `False`                            | Enable automatic port discovery if preferred port is busy |
 | `--host`              | string | `0.0.0.0`                          | Host to bind to (use 'localhost' for local-only)          |
@@ -163,7 +163,13 @@ Example usage:
 
 ```bash
 # Use a different model
-mlx serve --model "mlx-community/your-model-id"
+mlx serve --model "mlx-community/Phi-3.5-mini-instruct-4bit"
+
+# Try Qwen for better multilingual support
+mlx serve --model "mlx-community/Qwen2.5-3B-Instruct-4bit"
+
+# Use a larger Gemma model for better quality
+mlx serve --model "mlx-community/gemma-2-9b-it-4bit"
 
 # Change port with auto-discovery
 mlx serve --port 8080 --auto-port
@@ -390,15 +396,17 @@ Optimized for Apple Silicon with Gemma 3's 4-bit model:
 
 ## Model Compatibility
 
-This server works with MLX-compatible models from Hugging Face:
+This server works with MLX-compatible models from Hugging Face. Look for models in the `mlx-community` namespace that typically end in `-4bit`.
 
 - **Vision-Language Models**: Models that support both text and image inputs
 - **Text-Only Models**: Automatically detected and handled via fallback
   - The server automatically falls back from vision API to text-only API when needed
   - This ensures compatibility with both multimodal and text-only MLX models
-- **Recommended Models**:
-  - `mlx-community/gemma-3-4b-it-4bit` (default)
-  - `mlx-community/llama-3.2-11b-vision-instruct-4bit`
+- **Popular Models**:
+  - `mlx-community/gemma-3-4b-it-4bit` (default - balanced performance)
+  - `mlx-community/Phi-3.5-mini-instruct-4bit` (faster, smaller)
+  - `mlx-community/Qwen2.5-3B-Instruct-4bit` (great multilingual support)
+  - `mlx-community/llama-3.2-11b-vision-instruct-4bit` (larger, higher quality)
 
 ## Security Considerations
 
