@@ -371,9 +371,9 @@ class TestMessageValidation:
 
                 # Should have sent frame_dropped message
                 dropped_msgs = [msg for msg in sent_messages if msg.get("type") == "frame_dropped"]
-                assert (
-                    len(dropped_msgs) == 1
-                ), f"Expected 1 frame_dropped message, got {len(dropped_msgs)}. All messages: {sent_messages}"
+                assert len(dropped_msgs) == 1, (
+                    f"Expected 1 frame_dropped message, got {len(dropped_msgs)}. All messages: {sent_messages}"
+                )
                 assert dropped_msgs[0]["reason"] == "processing_queue_full"
 
     @pytest.mark.asyncio

@@ -384,9 +384,9 @@ class TestTextProcessingErrors:
                     except (json.JSONDecodeError, KeyError, TypeError):
                         pass
 
-                assert (
-                    len(error_messages) > 0
-                ), f"Expected error message with 'Invalid text input', got: {mock_send_calls}"
+                assert len(error_messages) > 0, (
+                    f"Expected error message with 'Invalid text input', got: {mock_send_calls}"
+                )
 
 
 class TestStreamingErrors:
