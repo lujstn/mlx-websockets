@@ -4,32 +4,49 @@ Thank you for your interest in contributing to MLX WebSockets! This document pro
 
 ## Development Setup
 
+### Quick Setup (Recommended)
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/lujstn/mlx-websockets.git
    cd mlx-websockets
    ```
 
-2. Create a virtual environment:
+2. Create and activate a virtual environment:
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. Install the package in development mode:
+3. Run the setup script:
+   ```bash
+   ./scripts/setup.sh
+   ```
+
+   This automated setup script will:
+   - Install all development dependencies
+   - Set up pre-commit hooks for code quality checks
+   - Set up commit-msg hooks for conventional commit enforcement
+   - Install a pre-push hook that runs all CI/CD checks locally
+   - Run initial code quality checks on all files
+   - Enable the `mlx` CLI command for testing
+
+### Manual Setup (Alternative)
+
+If you prefer to set up manually or the script doesn't work on your system:
+
+1. Install the package in development mode:
    ```bash
    pip install -e ".[dev]"
    ```
 
-4. Set up pre-commit hooks:
+2. Install pre-commit hooks:
    ```bash
    pre-commit install
+   pre-commit install --hook-type commit-msg
    ```
 
-   This will:
-   - Install all dependencies including development tools
-   - Set up pre-commit hooks for automatic formatting and linting
-   - Enable the `mlx` CLI command for testing
+3. Note: The manual setup won't install the pre-push hook that prevents CI/CD failures
 
 ## Running Tests
 
@@ -52,8 +69,18 @@ pytest tests/test_cli.py -v
 
 Before submitting PRs, ensure:
 - All tests pass: `pytest`
-- Code is formatted: `black .`
+- Code is formatted: `ruff format .`
 - Linting passes: `ruff check .`
+- Type checking passes: `mypy mlx_websockets --ignore-missing-imports`
+
+The pre-push hook will automatically run all CI/CD checks before pushing:
+- Code formatting check (`ruff format --check`)
+- Linting (`ruff check`)
+- Type checking (`mypy`)
+- Unit tests (`pytest`)
+- Build validation (`python -m build` and `twine check`)
+
+To bypass the pre-push checks in emergencies: `git push --no-verify`
 
 ## Commit Guidelines
 

@@ -2,6 +2,13 @@
 
 A high-performance WebSocket server for streaming multimodal data (text, images, video) to MLX models running locally on Apple Silicon Macs, enabling real-time AI responses with minimal latency.
 
+## Installation
+
+```bash
+brew tap lujstn/tap
+brew install mlx-websockets
+```
+
 ## Features
 
 - 🚀 **Real-time streaming** - WebSocket-based communication for low-latency inference
@@ -46,20 +53,24 @@ pip install -e .
 mlx help
 ```
 
-### Via Homebrew
-
-```bash
-brew tap lujstn/mlx-websockets
-brew install mlx-websockets
-```
-
-To run as a background service with Homebrew:
-
-```bash
-brew services start mlx-websockets
-```
-
 ## Development
+
+### Quick Start for Contributors
+
+1. Clone and enter the repository:
+   ```bash
+   git clone https://github.com/lujstn/mlx-websockets.git
+   cd mlx-websockets
+   ```
+
+2. Set up your development environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ./scripts/setup.sh
+   ```
+
+   The setup script will install all dependencies and configure git hooks that run comprehensive checks before commits and pushes to catch issues early.
 
 ### Testing
 
@@ -78,7 +89,7 @@ pytest tests/test_server.py -v
 
 ### Linting and Formatting
 
-We use `black` for code formatting and `ruff` for linting:
+We use `ruff` for both code formatting and linting:
 
 ```bash
 # Format code
@@ -90,6 +101,8 @@ make lint
 # Run everything (format, lint, test)
 make all
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development guidelines.
 
 ## Quick Start
 
@@ -131,20 +144,20 @@ mlx background stop
 
 Configure the server at startup using command-line arguments:
 
-| Argument              | Type   | Default                              | Description                                         |
-| --------------------- | ------ | ------------------------------------ | --------------------------------------------------- |
-| `--model`             | string | `mlx-community/gemma-3-4b-it-4bit`   | MLX model name from HuggingFace                     |
-| `--port`              | int    | `8765`                               | WebSocket server port                               |
-| `--auto-port`         | flag   | `False`                              | Enable automatic port discovery if preferred port is busy |
-| `--host`              | string | `0.0.0.0`                            | Host to bind to (use 'localhost' for local-only)    |
-| `--trust-remote-code` | flag   | `False`                              | Enable trusting remote code for tokenizer           |
-| `--tokenizer-config`  | string | None                                 | Tokenizer config.json file path                     |
-| `--chat-template`     | string | None                                 | Chat template or template name                       |
-| `--max-tokens`        | int    | `512`                                | Maximum number of tokens to generate                |
-| `--temperature`       | float  | `0.7`                                | Sampling temperature                                 |
-| `--seed`              | int    | None                                 | Random seed for generation                           |
-| `--debug`             | flag   | `False`                              | Enable debug logging                                |
-| `--show-warnings`     | flag   | `False`                              | Show all warnings (including harmless ones)         |
+| Argument              | Type   | Default                            | Description                                               |
+| --------------------- | ------ | ---------------------------------- | --------------------------------------------------------- |
+| `--model`             | string | `mlx-community/gemma-3-4b-it-4bit` | MLX model name from HuggingFace                           |
+| `--port`              | int    | `8765`                             | WebSocket server port                                     |
+| `--auto-port`         | flag   | `False`                            | Enable automatic port discovery if preferred port is busy |
+| `--host`              | string | `0.0.0.0`                          | Host to bind to (use 'localhost' for local-only)          |
+| `--trust-remote-code` | flag   | `False`                            | Enable trusting remote code for tokenizer                 |
+| `--tokenizer-config`  | string | None                               | Tokenizer config.json file path                           |
+| `--chat-template`     | string | None                               | Chat template or template name                            |
+| `--max-tokens`        | int    | `512`                              | Maximum number of tokens to generate                      |
+| `--temperature`       | float  | `0.7`                              | Sampling temperature                                      |
+| `--seed`              | int    | None                               | Random seed for generation                                |
+| `--debug`             | flag   | `False`                            | Enable debug logging                                      |
+| `--show-warnings`     | flag   | `False`                            | Show all warnings (including harmless ones)               |
 
 Example usage:
 
