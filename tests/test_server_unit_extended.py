@@ -233,7 +233,7 @@ class TestStreamingHelpers:
 
                     assert result is True
                     mock_run.assert_called_once()
-                    mock_future.result.assert_called_once_with(timeout=1.0)
+                    mock_future.result.assert_called_once_with(timeout=2.5)
             finally:
                 loop.close()
 

@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "WebSocket streaming server for MLX models"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Lucas Johnston Kurilov", email = "code@lucasco.de"},
 ]
@@ -105,7 +105,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 # Timeout for tests to prevent hanging
-timeout = 30
+timeout = 60
 timeout_method = "thread"
 
 # Markers

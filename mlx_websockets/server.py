@@ -705,11 +705,21 @@ class MLXStreamingServer:
                 if client_id in self.client_stop_events:
                     self.client_stop_events[client_id].set()
 
-                processing_thread.join(timeout=5.0)
+                # Try multiple times with increasing timeouts
+                timeout_attempts = [(2.0, "first"), (3.0, "second"), (5.0, "final")]
+                for timeout, attempt in timeout_attempts:
+                    processing_thread.join(timeout=timeout)
+                    if not processing_thread.is_alive():
+                        break
+                    elif self.debug:
+                        logger.debug(
+                            f"Processing thread for {client_id} still alive after {attempt} attempt ({timeout}s)"
+                        )
+
                 if processing_thread.is_alive():
                     if self.debug:
                         logger.warning(
-                            f"Processing thread for {client_id} didn't stop cleanly after 5s (may still be draining queue)"
+                            f"Processing thread for {client_id} didn't stop after all attempts (total 10s) - may still be draining queue"
                         )
 
             with self.clients_lock:
@@ -813,7 +823,7 @@ class MLXStreamingServer:
         """Safely send message to websocket, handling connection errors"""
         try:
             future = asyncio.run_coroutine_threadsafe(websocket.send(message), loop)
-            future.result(timeout=1.0)
+            future.result(timeout=2.5)
             return True
         except (
             websockets.exceptions.ConnectionClosed,
@@ -1532,9 +1542,10 @@ class MLXStreamingServer:
 
         # Wait for threads to finish with a longer timeout
         # This is especially important during tests with many concurrent clients
-        max_wait_time = 5.0  # Maximum time to wait for threads
+        max_wait_time = 10.0  # Increased maximum time to wait for threads
         wait_interval = 0.1  # Check interval
         elapsed_time = 0.0
+        last_thread_count = -1
 
         while elapsed_time < max_wait_time:
             # Check if any threads are still running
@@ -1552,11 +1563,22 @@ class MLXStreamingServer:
             if not active_threads:
                 break  # All threads finished
 
+            # Log progress only when thread count changes
+            current_thread_count = len(active_threads)
+            if current_thread_count != last_thread_count and self.debug:
+                logger.debug(f"Waiting for {current_thread_count} processing threads to finish...")
+                last_thread_count = current_thread_count
+
             await asyncio.sleep(wait_interval)
             elapsed_time += wait_interval
 
-        if active_threads and self.debug:
-            logger.warning(f"Timed out waiting for {len(active_threads)} threads to finish")
+        if active_threads:
+            if self.debug:
+                logger.warning(
+                    f"Timed out waiting for {len(active_threads)} threads to finish after {max_wait_time}s"
+                )
+            else:
+                log_warning("Some background threads still running - forcing shutdown")
 
         # Close the server
         if self.server:

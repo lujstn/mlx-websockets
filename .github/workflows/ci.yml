@@ -9,6 +9,7 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v4
       with:
@@ -43,6 +44,7 @@ jobs:
 
   test:
     runs-on: macos-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +99,7 @@ jobs:
 
   conventional-commits:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: github.event_name == 'pull_request'
 
     steps:
@@ -130,6 +133,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v4
       with:
@@ -162,6 +166,7 @@ jobs:
   test-install:
     needs: build
     runs-on: macos-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ['3.12']  # Test install only on latest Python
