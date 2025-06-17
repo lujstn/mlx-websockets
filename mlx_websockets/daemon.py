@@ -124,7 +124,7 @@ def find_all_mlx_processes() -> list[ProcessInfo]:
                 # Try to get port from network connections if not found
                 if port == 8765:
                     try:
-                        connections = proc.connections(kind="inet")
+                        connections = proc.net_connections(kind="inet")
                         for conn in connections:
                             if conn.status == "LISTEN" and 8765 <= conn.laddr.port <= 8775:
                                 port = conn.laddr.port

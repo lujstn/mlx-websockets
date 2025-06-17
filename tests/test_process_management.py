@@ -42,7 +42,7 @@ class TestProcessDetection:
             "cmdline": ["python", "-m", "mlx_websockets.server", "--port", "8765"],
             "create_time": 1234567890.0,
         }
-        proc.connections = Mock(return_value=[])
+        proc.net_connections = Mock(return_value=[])
         return proc
 
     def test_find_all_mlx_processes_no_psutil(self):
@@ -91,7 +91,7 @@ class TestProcessDetection:
             "cmdline": ["python", "-m", "mlx_websockets.server", "--port", "8765"],
             "create_time": 1234567890.0,
         }
-        proc1.connections = Mock(return_value=[])
+        proc1.net_connections = Mock(return_value=[])
 
         proc2 = Mock()
         proc2.info = {
@@ -99,7 +99,7 @@ class TestProcessDetection:
             "cmdline": ["python", "mlx-websockets", "--port", "8766"],
             "create_time": 1234567891.0,
         }
-        proc2.connections = Mock(return_value=[])
+        proc2.net_connections = Mock(return_value=[])
 
         with patch("mlx_websockets.daemon.psutil.process_iter") as mock_process_iter:
             mock_process_iter.return_value = [proc1, proc2]
